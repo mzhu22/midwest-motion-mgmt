@@ -1,18 +1,26 @@
 # midwest-motion-mgmt
-Run SAM2 object tracking on MR-Linac images. Get masks.
+Run SAM2 object tracking on MR-Linac images.
+
+## System requirements
+The Docker image is built for Linux. A CUDA-compatible GPU is recommended, but not required.
 
 ## How to use
+### Volume mounting
 The Docker image expects input files at `/input` and writes outputs to `/output`. These should be provided as volume mounts.
 
 Example usage:
 ```bash
 docker run -it --rm \
-    -v /path/to/images:/input \
-    -v /path/to/output:/output \
+    -v /PATH/TO/IMAGES:/input \
+    -v /PATH/TO/OUTPUT:/output \
     ghcr.io/mzhu22/midwest-motion-mgmt:latest
 ```
 
-For more info, you can run the CLI app with `-h`.
+### Model weights
+SAM2 comes in four model sizes: `tiny`, `small`, `base_plus`, `large`, with tradeoffs in speed vs accuracy. We use `base_plus` by default. You can switch using the `--sam2_model_size` arg.
+
+### More info
+For more info, run the CLI app with `-h`.
 ```bash
 docker run -it --rm ghcr.io/mzhu22/midwest-motion-mgmt:latest -h
 ```
@@ -44,6 +52,9 @@ TwoDImages/
     TargetStructure/
         00285_Frame_ID_XXXXX.mha
         00286_Frame_ID_XXXXX.mha
+        ...
+        01531_Frame_ID_XXXXX.mha
+        01532_Frame_ID_XXXXX.mha
     00001_Frame_ID_XXXXX.mha
     00002_Frame_ID_XXXXX.mha
     ...
@@ -63,7 +74,7 @@ Input registrations and targets can be contours or masks. SAM2 operates on masks
 ## Output
 ```
 sagittal/
-    masks.mha       # W * H * T array of boolean masks, True is the object, False is background
+    masks.mha       # (W, H, T) array of boolean masks, 2D images over time. True is the object, False is background
     analysis.json   # metadata and image similarity metrics
 coronal/
     ...same as above
