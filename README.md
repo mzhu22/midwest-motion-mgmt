@@ -89,7 +89,7 @@ We:
 
 1. Treat frames 1, 3, 5... as consecutive frames for the sagittal scan, and 2, 4, 6... for coronal
 2. We use `TwoDImages/RegistrationStructure/{00285,00286}_Frame_ID_XXXXX.mha` as the starting contours for tracking
-3. We start object tracking from images `TwoDImages/00{285,286}_Frame_ID_XXX.mha`, and run until `TwoDImages/00{1531,1532}_Frame_ID_XXX.mha`
+3. We start object tracking from images `TwoDImages/{00285,00286}_Frame_ID_XXX.mha`, and run until `TwoDImages/{01531,01532}_Frame_ID_XXX.mha`
 4. We compute similarity metrics by comparing predicted masks against the contours in `TwoDImages/TargetStructure/`
 
 ### Contours vs masks
