@@ -2,9 +2,11 @@
 
 Run SAM2 object tracking on MR-Linac images.
 
-## System requirements
+## Requirements
 
-The Docker image is built for Linux. A CUDA-compatible GPU is recommended, but not required.
+The Docker image is built for Linux.
+
+A CUDA-compatible GPU is recommended, but not required. If using a GPU, the [Nvidia Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) must be installed to enable GPU acceleration for Docker containers.
 
 ## How to use
 
