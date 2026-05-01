@@ -43,7 +43,8 @@ describe("FolderInput", () => {
 
   it("shows Loading text when loading", () => {
     render(<FolderInput onLoad={() => {}} loading={true} />);
-    expect(screen.getByRole("button")).toHaveTextContent("Loading...");
-    expect(screen.getByRole("button")).toBeDisabled();
+    const loadBtn = screen.getByRole("button", { name: /loading/i });
+    expect(loadBtn).toHaveTextContent("Loading...");
+    expect(loadBtn).toBeDisabled();
   });
 });

@@ -1,5 +1,6 @@
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -29,7 +30,12 @@ def main():
         cwd=frontend_dir,
     )
 
-    time.sleep(3)
+    while True:
+        try:
+            with socket.create_connection(("localhost", 5173), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.25)
     webbrowser.open("http://localhost:5173")
 
     def shutdown(sig, frame):

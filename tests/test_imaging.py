@@ -125,16 +125,17 @@ class TestReadTargetContourAsPng:
         img = Image.open(io.BytesIO(png_bytes))
         assert img.mode == "RGBA"
 
-    def test_boundary_is_green(self, tmp_input_dir):
+    def test_boundary_is_hot_pink(self, tmp_input_dir):
         target_dir = tmp_input_dir / "TwoDImages" / "TargetStructure"
         mha_file = next(target_dir.glob("*.mha"))
         png_bytes = imaging.read_target_contour_as_png(str(mha_file))
         img = Image.open(io.BytesIO(png_bytes))
         arr = np.array(img)
-        green_pixels = arr[arr[:, :, 3] > 0]
-        assert len(green_pixels) > 0
-        assert np.all(green_pixels[:, 1] == 255)  # green channel
-        assert np.all(green_pixels[:, 0] == 0)  # red channel
+        boundary_pixels = arr[arr[:, :, 3] > 0]
+        assert len(boundary_pixels) > 0
+        assert np.all(boundary_pixels[:, 0] == 255)   # red
+        assert np.all(boundary_pixels[:, 1] == 20)    # green
+        assert np.all(boundary_pixels[:, 2] == 147)   # blue
 
     def test_empty_mask_returns_transparent(self, tmp_path):
         arr = np.full((8, 8), 255, dtype=np.uint8)

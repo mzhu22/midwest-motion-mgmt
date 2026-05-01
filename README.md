@@ -1,9 +1,37 @@
 # midwest-motion-mgmt
 
-Run SAM2 object tracking on MR-Linac images.
+Multi-object tracking for MRgRT.
 
+# Contouring web app
+## Installation
+This app requires uv (a Python package manager) and Node.js. Follow the instructions below to install:
+
+1. Install uv: https://docs.astral.sh/uv/getting-started/installation/
+2. Install Node.js: https://nodejs.org/en/download
+
+Then, clone this repo onto your local computer. In your terminal:
+```bash
+git clone git@github.com:mzhu22/midwest-motion-mgmt.git
+cd midwest-motion-mgmt
+```
+
+Then install package dependencies (make sure you're in the repo directory).
+```bash
+# Install backend deps
+uv sync
+
+# Install frontend deps
+cd frontend && npm install && cd ..
+```
+
+## Starting the app
+Run the following in your terminal, and the app should open in the browser.
+```bash
+uv run launch.py
+```
+
+# Object tracking Docker image
 ## Requirements
-
 The Docker image is built for Linux.
 
 A CUDA-compatible GPU is recommended, but not required. If using a GPU, the [Nvidia Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) must be installed to enable GPU acceleration for Docker containers.
@@ -93,7 +121,3 @@ We:
 2. We use `TwoDImages/RegistrationStructure/{00285,00286}_Frame_ID_XXXXX.mha` as the starting contours for tracking
 3. We start object tracking from images `TwoDImages/{00285,00286}_Frame_ID_XXX.mha`, and run until `TwoDImages/{01531,01532}_Frame_ID_XXX.mha`
 4. We compute similarity metrics by comparing predicted masks against the contours in `TwoDImages/TargetStructure/`
-
-### Contours vs masks
-
-Input registrations and targets can be contours or masks. SAM2 operates on masks, so if contours are provided, we fill them in before running analysis.

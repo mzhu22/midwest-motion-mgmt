@@ -5,8 +5,6 @@ interface Props {
   onLabelsChange: (labels: string[]) => void;
   activeColorIndex: number;
   onActiveColorChange: (index: number) => void;
-  brushSize: number;
-  onBrushSizeChange: (size: number) => void;
   erasing: boolean;
   onErasingChange: (erasing: boolean) => void;
   onSave: () => void;
@@ -20,8 +18,6 @@ export default function LabelPanel({
   onLabelsChange,
   activeColorIndex,
   onActiveColorChange,
-  brushSize,
-  onBrushSizeChange,
   erasing,
   onErasingChange,
   onSave,
@@ -69,21 +65,27 @@ export default function LabelPanel({
               flexShrink: 0,
             }}
           />
-          <input
-            type="text"
-            value={labels[i] ?? ""}
-            onChange={(e) => {
-              const next = [...labels];
-              next[i] = e.target.value;
-              onLabelsChange(next);
-            }}
-            onFocus={() => {
-              onActiveColorChange(i);
-              onErasingChange(false);
-            }}
-            placeholder={`Object ${i}`}
-            style={{ flex: 1, padding: "3px 6px", fontSize: 13 }}
-          />
+          {i === 0 ? (
+            <span style={{ flex: 1, padding: "3px 6px", fontSize: 13, color: "#374151" }}>
+              {labels[0]}
+            </span>
+          ) : (
+            <input
+              type="text"
+              value={labels[i] ?? ""}
+              onChange={(e) => {
+                const next = [...labels];
+                next[i] = e.target.value;
+                onLabelsChange(next);
+              }}
+              onFocus={() => {
+                onActiveColorChange(i);
+                onErasingChange(false);
+              }}
+              placeholder={`Object ${i}`}
+              style={{ flex: 1, padding: "3px 6px", fontSize: 13 }}
+            />
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -106,18 +108,6 @@ export default function LabelPanel({
       ))}
 
       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <label style={{ fontSize: 13 }}>Brush size:</label>
-          <input
-            type="number"
-            min={1}
-            max={20}
-            value={brushSize}
-            onChange={(e) => onBrushSizeChange(Number(e.target.value))}
-            style={{ width: 50, padding: "3px 6px", fontSize: 13 }}
-          />
-        </div>
-
         <button
           onClick={() => onErasingChange(!erasing)}
           style={{

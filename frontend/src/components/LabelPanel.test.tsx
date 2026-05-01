@@ -4,12 +4,10 @@ import userEvent from "@testing-library/user-event";
 import LabelPanel from "./LabelPanel";
 
 const defaultProps = {
-  labels: Array(8).fill(""),
+  labels: ["target", ...Array(7).fill("")],
   onLabelsChange: vi.fn(),
   activeColorIndex: 0,
   onActiveColorChange: vi.fn(),
-  brushSize: 2,
-  onBrushSizeChange: vi.fn(),
   erasing: false,
   onErasingChange: vi.fn(),
   onSave: vi.fn(),
@@ -29,18 +27,20 @@ function renderPanel(overrides: Partial<typeof defaultProps> = {}) {
 }
 
 describe("LabelPanel", () => {
-  it("renders 8 label inputs", () => {
+  it("renders 7 editable label inputs and 1 fixed text for object 0", () => {
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
-    expect(inputs).toHaveLength(8);
+    expect(inputs).toHaveLength(7);
+    expect(screen.getByText("target")).toBeInTheDocument();
   });
 
   it("clicking a color swatch calls onActiveColorChange and disables erasing", async () => {
     const user = userEvent.setup();
     renderPanel();
-    const swatches = screen.getAllByPlaceholderText(/Object \d/);
-    const thirdSwatch = swatches[2]!.parentElement!.querySelector("div")!;
-    await user.click(thirdSwatch);
+    // inputs[0] is Object 1 (Object 0 has no input); its parent row is index 1
+    const inputs = screen.getAllByPlaceholderText(/Object \d/);
+    const secondSwatch = inputs[1]!.parentElement!.querySelector("div")!;
+    await user.click(secondSwatch);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(2);
     expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
   });
@@ -49,7 +49,7 @@ describe("LabelPanel", () => {
     const user = userEvent.setup();
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
-    await user.type(inputs[0]!, "tumor");
+    await user.type(inputs[1]!, "tumor");
     expect(defaultProps.onLabelsChange).toHaveBeenCalled();
   });
 
@@ -77,18 +77,12 @@ describe("LabelPanel", () => {
     expect(screen.getByRole("button", { name: /saving/i })).toBeDisabled();
   });
 
-  it("brush size input shows current value", () => {
-    renderPanel({ brushSize: 5 });
-    const input = screen.getByRole("spinbutton");
-    expect(input).toHaveValue(5);
-  });
-
   it("clicking the row (outside the swatch) activates that color and disables erasing", async () => {
     const user = userEvent.setup();
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
-    // Click the row div (parent of the input) rather than the swatch or input
-    const row = inputs[2]!.parentElement!;
+    // inputs[1] is Object 2 (Object 0 has no input, inputs[0] is Object 1)
+    const row = inputs[1]!.parentElement!;
     await user.click(row);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(2);
     expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
@@ -98,7 +92,8 @@ describe("LabelPanel", () => {
     const user = userEvent.setup();
     renderPanel({ erasing: true });
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
-    await user.click(inputs[4]!);
+    // inputs[3] is Object 4
+    await user.click(inputs[3]!);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(4);
     expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
   });

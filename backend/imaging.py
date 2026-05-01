@@ -67,9 +67,9 @@ def read_target_contour_as_png(filepath: str) -> bytes:
     boundary = mask & ~binary_erosion(mask)
     h, w = arr.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba[boundary, 0] = 0
-    rgba[boundary, 1] = 255
-    rgba[boundary, 2] = 0
+    rgba[boundary, 0] = 255
+    rgba[boundary, 1] = 20
+    rgba[boundary, 2] = 147
     rgba[boundary, 3] = 200
     buf = io.BytesIO()
     Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
@@ -103,9 +103,10 @@ def save_annotations(
         if not b64:
             continue
         png_bytes = base64.b64decode(b64)
-        mask_img = Image.open(io.BytesIO(png_bytes)).convert("L")
+        mask_img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
         mask_arr = np.array(mask_img.resize((w, h), Image.NEAREST))
-        output[mask_arr > 128] = i
+        alpha = mask_arr[:, :, 3]
+        output[alpha > 128] = i
 
     out_sitk = sitk.GetImageFromArray(output)
     out_sitk.SetOrigin(original.GetOrigin()[:2])

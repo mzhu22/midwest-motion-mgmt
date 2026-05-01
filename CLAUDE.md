@@ -16,7 +16,7 @@ uv sync
 cd frontend && npm install && cd ..
 
 # Start both servers (Flask on :5001, Vite on :5173, opens browser)
-uv run python run.py
+uv run launch.py
 ```
 
 The Vite dev server proxies `/api` requests to the Flask backend (configured in `frontend/vite.config.ts`).
@@ -30,6 +30,8 @@ cd frontend && npx tsc -b && npx vite build
 No linter or formatter is configured.
 
 ## Tests
+
+Run tests when making changes to validate behavior.
 
 ```bash
 # Run all tests (backend + frontend)

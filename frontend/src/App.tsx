@@ -12,9 +12,9 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [labels, setLabels] = useState<string[]>(Array(8).fill(""));
+  const [labels, setLabels] = useState<string[]>(["target", ...Array(7).fill("")]);
   const [activeColorIndex, setActiveColorIndex] = useState(0);
-  const [brushSize, setBrushSize] = useState(2);
+  const brushSize = 1;
   const [erasing, setErasing] = useState(false);
   const [frameLines, setFrameLines] = useState<Record<string, LineData[]>>({});
 
@@ -168,14 +168,34 @@ export default function App() {
       )}
 
       {frames.length > 0 && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: "10px 14px",
+            background: "#f0f4ff",
+            border: "1px solid #c7d2fe",
+            borderRadius: 6,
+            fontSize: 15,
+            lineHeight: 1.6,
+            color: "#374151",
+          }}
+        >
+          <strong>Instructions: </strong>
+          <br />
+          Select an object on the left, then draw a contour over the object on each frame. The original target contour is shown in pink for reference.
+          Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. Use <strong>Eraser</strong> to remove strokes, or <strong>X</strong> to clear all strokes for an object.
+          <br /><br />
+          Enter a <strong>label</strong> for each object you draw (other than the target). When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
+        </div>
+      )}
+
+      {frames.length > 0 && (
         <div style={{ display: "flex", gap: 20 }}>
           <LabelPanel
             labels={labels}
             onLabelsChange={setLabels}
             activeColorIndex={activeColorIndex}
             onActiveColorChange={setActiveColorIndex}
-            brushSize={brushSize}
-            onBrushSizeChange={setBrushSize}
             erasing={erasing}
             onErasingChange={setErasing}
             onSave={handleSave}
