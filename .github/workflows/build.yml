@@ -1,0 +1,60 @@
+name: Build Windows Executable
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python dependencies
+        run: uv sync --group build
+
+      - name: Run PyInstaller
+        run: uv run pyinstaller midwest_motion.spec --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MidwestMotionMgmt-windows
+          path: dist/MidwestMotionMgmt/
+          retention-days: 30
+
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: Compress-Archive -Path dist/MidwestMotionMgmt/* -DestinationPath MidwestMotionMgmt-windows.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MidwestMotionMgmt-windows.zip
+          generate_release_notes: true
