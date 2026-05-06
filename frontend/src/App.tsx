@@ -4,6 +4,7 @@ import FolderInput from "./components/FolderInput";
 import FrameViewer from "./components/FrameViewer";
 import LabelPanel from "./components/LabelPanel";
 import type { FrameInfo, LineData } from "./types";
+import { exportMasksForFrame } from "./exportMasks";
 import { isEnclosed } from "./validation";
 
 export default function App() {
@@ -14,7 +15,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [labels, setLabels] = useState<string[]>(["target", ...Array(7).fill("")]);
   const [activeColorIndex, setActiveColorIndex] = useState(0);
-  const brushSize = 1;
+  const brushSize = 2;
   const [erasing, setErasing] = useState(false);
   const [frameLines, setFrameLines] = useState<Record<string, LineData[]>>({});
 
@@ -46,43 +47,13 @@ export default function App() {
     }
   }, []);
 
-  const exportMasksForFrame = useCallback(
+  const exportMasks = useCallback(
     (frameIdx: number): string[] => {
       const frame = frames[frameIdx];
       const stage = stageRefs[frameIdx]?.current;
       if (!frame || !stage) return Array(8).fill("");
-
       const lines = frameLines[frame.frame_index] ?? [];
-      const annotationLayer = stage.getLayers()[2];
-      if (!annotationLayer) return Array(8).fill("");
-
-      const masks: string[] = [];
-      const scale = 2; // DISPLAY_SCALE from AnnotationCanvas
-
-      for (let objIdx = 0; objIdx < 8; objIdx++) {
-        const children = annotationLayer.getChildren();
-        const visibility: boolean[] = [];
-
-        children.forEach((child, i) => {
-          visibility.push(child.visible());
-          const line = lines[i];
-          child.visible(line?.objectIndex === objIdx);
-        });
-
-        const dataUrl = annotationLayer.toDataURL({
-          pixelRatio: 1 / scale,
-          width: frame.width * scale,
-          height: frame.height * scale,
-        });
-
-        children.forEach((child, i) => {
-          child.visible(visibility[i] ?? true);
-        });
-
-        const hasStrokes = lines.some((l) => l.objectIndex === objIdx);
-        masks.push(hasStrokes ? dataUrl.split(",")[1] ?? "" : "");
-      }
-      return masks;
+      return exportMasksForFrame(stage, frame, lines);
     },
     [frames, frameLines, stageRefs]
   );
@@ -129,7 +100,7 @@ export default function App() {
     try {
       const framesData = frames.map((frame, i) => ({
         frame_index: frame.frame_index,
-        masks: exportMasksForFrame(i),
+        masks: exportMasks(i),
       }));
 
       const labelMap: Record<string, string> = {};
@@ -153,7 +124,7 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  }, [frames, labels, exportMasksForFrame]);
+  }, [frames, labels, exportMasks]);
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 20, maxWidth: 1400, margin: "0 auto" }}>

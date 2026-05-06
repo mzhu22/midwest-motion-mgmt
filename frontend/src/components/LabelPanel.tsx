@@ -142,7 +142,16 @@ export default function LabelPanel({
         </button>
 
         {savedPath && (
-          <div style={{ fontSize: 13, color: "#16a34a", marginTop: 4 }}>
+          <div
+            title={savedPath}
+            style={{
+              fontSize: 13,
+              color: "#16a34a",
+              marginTop: 4,
+              maxWidth: 220,
+              wordBreak: "break-all",
+            }}
+          >
             Saved to: {savedPath}
           </div>
         )}
