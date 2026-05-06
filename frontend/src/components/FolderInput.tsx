@@ -24,8 +24,13 @@ export default function FolderInput({ onLoad, loading }: Props) {
   };
 
   return (
-    <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-      <button
+    <div style={{ marginBottom: 16 }}>
+      <p style={{ margin: "0 0 8px", fontSize: 14, color: "#555" }}>
+        Select a scan folder (should contain subfolders such as{" "}
+        <strong>TwoDImages</strong> and <strong>ExamCards</strong>).
+      </p>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
         onClick={handleBrowse}
         disabled={loading || browsing}
         style={{ padding: "6px 16px", fontSize: 14, whiteSpace: "nowrap" }}
@@ -49,6 +54,7 @@ export default function FolderInput({ onLoad, loading }: Props) {
       >
         {loading ? "Loading..." : "Load"}
       </button>
+      </div>
     </div>
   );
 }

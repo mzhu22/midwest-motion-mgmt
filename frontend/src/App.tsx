@@ -158,7 +158,6 @@ export default function App() {
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 20, maxWidth: 1400, margin: "0 auto" }}>
       <h1 style={{ fontSize: 22, marginBottom: 16 }}>MR-Linac Annotation Tool</h1>
-
       <FolderInput onLoad={handleLoad} loading={loading} />
 
       {error && (
@@ -190,7 +189,7 @@ export default function App() {
       )}
 
       {frames.length > 0 && (
-        <div style={{ display: "flex", gap: 20 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
           <LabelPanel
             labels={labels}
             onLabelsChange={setLabels}
@@ -211,7 +210,7 @@ export default function App() {
               })
             }
           />
-          <div style={{ display: "flex", gap: 20, flex: 1 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}>
             {frames.map((frame, i) => (
               <FrameViewer
                 key={frame.frame_index}

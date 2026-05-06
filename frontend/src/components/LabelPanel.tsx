@@ -26,7 +26,7 @@ export default function LabelPanel({
   onClearObject,
 }: Props) {
   return (
-    <div style={{ padding: 12, minWidth: 240 }}>
+    <div style={{ padding: 12, minWidth: 240, flex: "0 0 auto" }}>
       <h3 style={{ margin: "0 0 12px" }}>Annotations</h3>
 
       {COLORS.map((color, i) => (

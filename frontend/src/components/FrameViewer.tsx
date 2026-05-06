@@ -22,7 +22,7 @@ export default function FrameViewer({
   stageRef,
 }: Props) {
   return (
-    <div>
+    <div style={{ flex: "1 1 auto", minWidth: 200, maxWidth: "100%", overflow: "auto" }}>
       <div style={{ marginBottom: 8, fontSize: 14 }}>
         <strong>Frame {frame.frame_index}</strong> — {frame.plane}
         <span style={{ color: "#888", marginLeft: 8 }}>
