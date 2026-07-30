@@ -3,6 +3,7 @@ import { Stage, Layer, Line, Image as KonvaImage } from "react-konva";
 import type Konva from "konva";
 import type { LineData } from "../types";
 import { COLORS } from "../types";
+import { btnStyle } from "./buttonStyle";
 
 interface Props {
   frameIndex: string;
@@ -10,7 +11,6 @@ interface Props {
   height: number;
   activeColorIndex: number;
   brushSize: number;
-  erasing: boolean;
   lines: LineData[];
   onLinesChange: (lines: LineData[]) => void;
   stageRef: React.RefObject<Konva.Stage>;
@@ -37,7 +37,6 @@ export default function AnnotationCanvas({
   height,
   activeColorIndex,
   brushSize,
-  erasing,
   lines,
   onLinesChange,
   stageRef,
@@ -118,13 +117,13 @@ export default function AnnotationCanvas({
       const { x, y } = toImageCoords(pos, stage);
       const newLine: LineData = {
         points: [x, y],
-        stroke: erasing ? "#000000" : COLORS[activeColorIndex]!,
+        stroke: COLORS[activeColorIndex]!,
         strokeWidth: brushSize,
-        objectIndex: erasing ? -1 : activeColorIndex,
+        objectIndex: activeColorIndex,
       };
       onLinesChange([...lines, newLine]);
     },
-    [lines, onLinesChange, activeColorIndex, brushSize, erasing, panMode]
+    [lines, onLinesChange, activeColorIndex, brushSize, panMode]
   );
 
   const handleMouseMove = useCallback(
@@ -156,16 +155,6 @@ export default function AnnotationCanvas({
     isDrawing.current = false;
     isPanning.current = false;
   }, []);
-
-  const btnStyle = (active = false): React.CSSProperties => ({
-    padding: "3px 10px",
-    fontSize: 13,
-    border: "1px solid #ccc",
-    borderRadius: 4,
-    cursor: "pointer",
-    background: active ? "#334155" : "#f1f5f9",
-    color: active ? "#fff" : "#333",
-  });
 
   return (
     <div ref={containerRef} style={{ display: "inline-block" }}>
@@ -237,10 +226,7 @@ export default function AnnotationCanvas({
               tension={0.5}
               lineCap="round"
               lineJoin="round"
-              globalCompositeOperation={
-                line.objectIndex === -1 ? "destination-out" : "source-over"
-              }
-              opacity={line.objectIndex === -1 ? 1 : 0.6}
+              opacity={0.6}
             />
           ))}
         </Layer>

@@ -11,6 +11,7 @@ export interface LineData {
   points: number[];
   stroke: string;
   strokeWidth: number;
+  // Which annotation object this stroke belongs to: always 0..7 (an index into COLORS).
   objectIndex: number;
 }
 

@@ -5,12 +5,9 @@ interface Props {
   onLabelsChange: (labels: string[]) => void;
   activeColorIndex: number;
   onActiveColorChange: (index: number) => void;
-  erasing: boolean;
-  onErasingChange: (erasing: boolean) => void;
   onSave: () => void;
   saving: boolean;
   savedPath: string | null;
-  onClearObject: (index: number) => void;
 }
 
 export default function LabelPanel({
@@ -18,12 +15,9 @@ export default function LabelPanel({
   onLabelsChange,
   activeColorIndex,
   onActiveColorChange,
-  erasing,
-  onErasingChange,
   onSave,
   saving,
   savedPath,
-  onClearObject,
 }: Props) {
   return (
     <div style={{ padding: 12, minWidth: 240, flex: "0 0 auto" }}>
@@ -32,10 +26,7 @@ export default function LabelPanel({
       {COLORS.map((color, i) => (
         <div
           key={i}
-          onClick={() => {
-            onActiveColorChange(i);
-            onErasingChange(false);
-          }}
+          onClick={() => onActiveColorChange(i)}
           style={{
             display: "flex",
             alignItems: "center",
@@ -46,10 +37,7 @@ export default function LabelPanel({
             cursor: "pointer",
             width: "100%",
             boxSizing: "border-box",
-            background:
-              !erasing && activeColorIndex === i
-                ? "#e8e8e8"
-                : "transparent",
+            background: activeColorIndex === i ? "#e8e8e8" : "transparent",
           }}
         >
           <div
@@ -59,7 +47,7 @@ export default function LabelPanel({
               borderRadius: 4,
               background: color,
               border:
-                !erasing && activeColorIndex === i
+                activeColorIndex === i
                   ? "2px solid #333"
                   : "2px solid transparent",
               flexShrink: 0,
@@ -78,51 +66,15 @@ export default function LabelPanel({
                 next[i] = e.target.value;
                 onLabelsChange(next);
               }}
-              onFocus={() => {
-                onActiveColorChange(i);
-                onErasingChange(false);
-              }}
+              onFocus={() => onActiveColorChange(i)}
               placeholder={`Object ${i}`}
               style={{ flex: 1, padding: "3px 6px", fontSize: 13 }}
             />
           )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onClearObject(i);
-            }}
-            title="Clear drawn strokes for this object"
-            style={{
-              padding: "3px 7px",
-              fontSize: 12,
-              background: "#eee",
-              border: "1px solid #ccc",
-              borderRadius: 4,
-              cursor: "pointer",
-              flexShrink: 0,
-            }}
-          >
-            ✕
-          </button>
         </div>
       ))}
 
       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-        <button
-          onClick={() => onErasingChange(!erasing)}
-          style={{
-            padding: "6px 12px",
-            fontSize: 13,
-            background: erasing ? "#ff4444" : "#eee",
-            color: erasing ? "#fff" : "#333",
-            border: "1px solid #ccc",
-            borderRadius: 4,
-            cursor: "pointer",
-          }}
-        >
-          {erasing ? "Eraser ON" : "Eraser"}
-        </button>
-
         <button
           onClick={onSave}
           disabled={saving}

@@ -16,7 +16,6 @@ export default function App() {
   const [labels, setLabels] = useState<string[]>(["target", ...Array(7).fill("")]);
   const [activeColorIndex, setActiveColorIndex] = useState(0);
   const brushSize = 2;
-  const [erasing, setErasing] = useState(false);
   const [frameLines, setFrameLines] = useState<Record<string, LineData[]>>({});
 
   const stageRefs = [
@@ -73,11 +72,10 @@ export default function App() {
     const usedObjectIndices = new Set<number>();
     for (const frame of frames) {
       const lines = frameLines[frame.frame_index] ?? [];
-      const drawLines = lines.filter((l) => l.objectIndex !== -1);
-      const objIndices = new Set(drawLines.map((l) => l.objectIndex));
+      const objIndices = new Set(lines.map((l) => l.objectIndex));
       for (const idx of objIndices) {
         usedObjectIndices.add(idx);
-        const objStrokes = drawLines.filter((l) => l.objectIndex === idx);
+        const objStrokes = lines.filter((l) => l.objectIndex === idx);
         if (!isEnclosed(objStrokes)) {
           validationErrors.push(
             `Object ${idx + 1} on ${frame.frame_index} (${frame.plane}) does not form an enclosed shape`
@@ -153,7 +151,7 @@ export default function App() {
           <strong>Instructions: </strong>
           <br />
           Select an object on the left, then draw a contour over the object on each frame. The original target contour is shown in pink for reference.
-          Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. Use <strong>Eraser</strong> to remove strokes, or <strong>X</strong> to clear all strokes for an object.
+          Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. To fix a mistake, click <strong>✕ Clear</strong> above that frame to remove the object's contour, then draw it again.
           <br /><br />
           Enter a <strong>label</strong> for each object you draw (other than the target). When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
         </div>
@@ -166,20 +164,9 @@ export default function App() {
             onLabelsChange={setLabels}
             activeColorIndex={activeColorIndex}
             onActiveColorChange={setActiveColorIndex}
-            erasing={erasing}
-            onErasingChange={setErasing}
             onSave={handleSave}
             saving={saving}
             savedPath={savedPath}
-            onClearObject={(objIdx) =>
-              setFrameLines((prev) => {
-                const next: typeof prev = {};
-                for (const [key, lines] of Object.entries(prev)) {
-                  next[key] = lines.filter((l) => l.objectIndex !== objIdx);
-                }
-                return next;
-              })
-            }
           />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}>
             {frames.map((frame, i) => (
@@ -187,13 +174,21 @@ export default function App() {
                 key={frame.frame_index}
                 frame={frame}
                 activeColorIndex={activeColorIndex}
+                activeLabel={labels[activeColorIndex]?.trim() || `Object ${activeColorIndex}`}
                 brushSize={brushSize}
-                erasing={erasing}
                 lines={frameLines[frame.frame_index] ?? []}
                 onLinesChange={(newLines) =>
                   setFrameLines((prev) => ({
                     ...prev,
                     [frame.frame_index]: newLines,
+                  }))
+                }
+                onClearActiveObject={() =>
+                  setFrameLines((prev) => ({
+                    ...prev,
+                    [frame.frame_index]: (prev[frame.frame_index] ?? []).filter(
+                      (l) => l.objectIndex !== activeColorIndex
+                    ),
                   }))
                 }
                 stageRef={stageRefs[i]!}

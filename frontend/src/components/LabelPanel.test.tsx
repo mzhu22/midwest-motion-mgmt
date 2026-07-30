@@ -8,12 +8,9 @@ const defaultProps = {
   onLabelsChange: vi.fn(),
   activeColorIndex: 0,
   onActiveColorChange: vi.fn(),
-  erasing: false,
-  onErasingChange: vi.fn(),
   onSave: vi.fn(),
   saving: false,
   savedPath: null as string | null,
-  onClearObject: vi.fn(),
 };
 
 function renderPanel(overrides: Partial<typeof defaultProps> = {}) {
@@ -34,7 +31,7 @@ describe("LabelPanel", () => {
     expect(screen.getByText("target")).toBeInTheDocument();
   });
 
-  it("clicking a color swatch calls onActiveColorChange and disables erasing", async () => {
+  it("clicking a color swatch calls onActiveColorChange", async () => {
     const user = userEvent.setup();
     renderPanel();
     // inputs[0] is Object 1 (Object 0 has no input); its parent row is index 1
@@ -42,7 +39,6 @@ describe("LabelPanel", () => {
     const secondSwatch = inputs[1]!.parentElement!.querySelector("div")!;
     await user.click(secondSwatch);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(2);
-    expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
   });
 
   it("typing in label input calls onLabelsChange", async () => {
@@ -53,16 +49,14 @@ describe("LabelPanel", () => {
     expect(defaultProps.onLabelsChange).toHaveBeenCalled();
   });
 
-  it("eraser button toggles erasing", async () => {
-    const user = userEvent.setup();
+  it("has no eraser control", () => {
     renderPanel();
-    await user.click(screen.getByRole("button", { name: /eraser/i }));
-    expect(defaultProps.onErasingChange).toHaveBeenCalledWith(true);
+    expect(screen.queryByRole("button", { name: /eras/i })).not.toBeInTheDocument();
   });
 
-  it("shows Eraser ON when erasing is true", () => {
-    renderPanel({ erasing: true });
-    expect(screen.getByRole("button", { name: /eraser on/i })).toBeInTheDocument();
+  it("has no per-object clear button (clearing is per-frame)", () => {
+    renderPanel();
+    expect(screen.queryByRole("button", { name: "✕" })).not.toBeInTheDocument();
   });
 
   it("save button calls onSave", async () => {
@@ -77,7 +71,7 @@ describe("LabelPanel", () => {
     expect(screen.getByRole("button", { name: /saving/i })).toBeDisabled();
   });
 
-  it("clicking the row (outside the swatch) activates that color and disables erasing", async () => {
+  it("clicking the row (outside the swatch) activates that color", async () => {
     const user = userEvent.setup();
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
@@ -85,17 +79,15 @@ describe("LabelPanel", () => {
     const row = inputs[1]!.parentElement!;
     await user.click(row);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(2);
-    expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
   });
 
-  it("focusing a label input activates that color and disables erasing", async () => {
+  it("focusing a label input activates that color", async () => {
     const user = userEvent.setup();
-    renderPanel({ erasing: true });
+    renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
     // inputs[3] is Object 4
     await user.click(inputs[3]!);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(4);
-    expect(defaultProps.onErasingChange).toHaveBeenCalledWith(false);
   });
 
   it("shows save path when savedPath is set", () => {
