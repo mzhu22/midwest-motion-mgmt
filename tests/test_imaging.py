@@ -11,6 +11,14 @@ import SimpleITK as sitk
 from PIL import Image
 
 from backend import imaging
+from tests.conftest import (
+    CORONAL_DIRECTION,
+    OBLIQUE_DIRECTION,
+    SAGITTAL_DIRECTION,
+    _make_frame_dir,
+    _write_mha_2d,
+    _write_mha_3d,
+)
 
 
 def _write_mha(path: Path, arr: np.ndarray, origin=(0.0, 0.0), spacing=(1.0, 1.0)):
@@ -18,6 +26,43 @@ def _write_mha(path: Path, arr: np.ndarray, origin=(0.0, 0.0), spacing=(1.0, 1.0
     img.SetOrigin(origin)
     img.SetSpacing(spacing)
     sitk.WriteImage(img, str(path))
+
+
+# --- _read_plane ---
+
+class TestReadPlane:
+    def test_sagittal_from_direction(self, tmp_path):
+        path = tmp_path / "sag.mha"
+        _write_mha_3d(path, np.zeros((8, 8), dtype=np.uint8), direction=SAGITTAL_DIRECTION)
+        assert imaging._read_plane(str(path)) == "sagittal"
+
+    def test_coronal_from_direction(self, tmp_path):
+        path = tmp_path / "cor.mha"
+        _write_mha_3d(path, np.zeros((8, 8), dtype=np.uint8), direction=CORONAL_DIRECTION)
+        assert imaging._read_plane(str(path)) == "coronal"
+
+    def test_2d_image_rejected(self, tmp_path):
+        path = tmp_path / "flat2d.mha"
+        _write_mha_2d(path, np.zeros((8, 8), dtype=np.uint8))
+        with pytest.raises(imaging.PlaneDetectionError) as exc:
+            imaging._read_plane(str(path))
+        assert "flat2d.mha" in str(exc.value)
+        assert "2D" in str(exc.value)
+
+    def test_oblique_rejected(self, tmp_path):
+        path = tmp_path / "oblique.mha"
+        _write_mha_3d(path, np.zeros((8, 8), dtype=np.uint8), direction=OBLIQUE_DIRECTION)
+        with pytest.raises(imaging.PlaneDetectionError) as exc:
+            imaging._read_plane(str(path))
+        assert "oblique.mha" in str(exc.value)
+        assert "oblique" in str(exc.value)
+
+    def test_unreadable_file_rejected(self, tmp_path):
+        path = tmp_path / "garbage.mha"
+        path.write_text("not an mha")
+        with pytest.raises(imaging.PlaneDetectionError) as exc:
+            imaging._read_plane(str(path))
+        assert "garbage.mha" in str(exc.value)
 
 
 # --- find_frames_with_targets ---
@@ -31,8 +76,37 @@ class TestFindFramesWithTargets:
 
     def test_plane_assignment(self, tmp_input_dir):
         frames = imaging.find_frames_with_targets(str(tmp_input_dir))
-        assert frames[0]["plane"] == "sagittal"  # odd
-        assert frames[1]["plane"] == "coronal"  # even
+        assert frames[0]["plane"] == "sagittal"
+        assert frames[1]["plane"] == "coronal"
+
+    def test_geometry_wins_over_index_parity(self, tmp_path):
+        """An even index carrying sagittal cosines must be reported as sagittal."""
+        _make_frame_dir(
+            tmp_path,
+            {"00002": SAGITTAL_DIRECTION, "00003": CORONAL_DIRECTION},
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        by_index = {f["frame_index"]: f["plane"] for f in frames}
+        assert by_index == {"00002": "sagittal", "00003": "coronal"}
+
+    def test_returns_sagittal_first_regardless_of_index_order(self, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {"00010": CORONAL_DIRECTION, "00011": SAGITTAL_DIRECTION},
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["plane"] for f in frames] == ["sagittal", "coronal"]
+        assert [f["frame_index"] for f in frames] == ["00011", "00010"]
+
+    def test_tolerates_missing_frames(self, tmp_path):
+        """A gap must not break plane assignment the way index parity would."""
+        _make_frame_dir(
+            tmp_path,
+            {"00286": CORONAL_DIRECTION, "00287": SAGITTAL_DIRECTION},
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        by_index = {f["frame_index"]: f["plane"] for f in frames}
+        assert by_index == {"00287": "sagittal", "00286": "coronal"}
 
     def test_frame_has_required_keys(self, tmp_input_dir):
         frames = imaging.find_frames_with_targets(str(tmp_input_dir))
@@ -47,11 +121,34 @@ class TestFindFramesWithTargets:
         target_dir = images_dir / "TargetStructure"
         arr = np.zeros((8, 8), dtype=np.uint8)
         for prefix in ("00003", "00004", "00005"):
-            _write_mha(images_dir / f"{prefix}_Frame.mha", arr)
-            _write_mha(target_dir / f"{prefix}_Frame.mha", arr)
+            _write_mha_3d(images_dir / f"{prefix}_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
+            _write_mha_3d(target_dir / f"{prefix}_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
 
         frames = imaging.find_frames_with_targets(str(tmp_input_dir))
         assert len(frames) == 2
+
+    def test_first_frame_of_each_plane_is_kept(self, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00001": SAGITTAL_DIRECTION,
+                "00002": CORONAL_DIRECTION,
+                "00003": SAGITTAL_DIRECTION,
+                "00004": CORONAL_DIRECTION,
+            },
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00001", "00002"]
+
+    def test_single_plane_series_rejected(self, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {"00001": SAGITTAL_DIRECTION, "00003": SAGITTAL_DIRECTION},
+        )
+        with pytest.raises(imaging.PlaneDetectionError) as exc:
+            imaging.find_frames_with_targets(str(tmp_path))
+        assert "coronal" in str(exc.value)
+        assert "sagittal" in str(exc.value)
 
     def test_empty_directory(self, tmp_path):
         images_dir = tmp_path / "TwoDImages"
@@ -59,8 +156,8 @@ class TestFindFramesWithTargets:
         images_dir.mkdir()
         target_dir.mkdir()
 
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert frames == []
+        with pytest.raises(imaging.PlaneDetectionError):
+            imaging.find_frames_with_targets(str(tmp_path))
 
     def test_no_overlap(self, tmp_path):
         images_dir = tmp_path / "TwoDImages"
@@ -68,11 +165,11 @@ class TestFindFramesWithTargets:
         images_dir.mkdir()
         target_dir.mkdir()
         arr = np.zeros((8, 8), dtype=np.uint8)
-        _write_mha(images_dir / "00001_Frame.mha", arr)
-        _write_mha(target_dir / "00002_Frame.mha", arr)
+        _write_mha_3d(images_dir / "00001_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
+        _write_mha_3d(target_dir / "00002_Frame.mha", arr, direction=CORONAL_DIRECTION)
 
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert frames == []
+        with pytest.raises(imaging.PlaneDetectionError):
+            imaging.find_frames_with_targets(str(tmp_path))
 
 
 # --- read_mha_as_png ---
@@ -205,9 +302,12 @@ class TestSaveAnnotations:
     def test_preserves_origin_and_spacing(self, tmp_input_dir):
         images_dir = tmp_input_dir / "TwoDImages"
         arr = np.zeros((8, 8), dtype=np.uint8)
-        origin = (10.0, 20.0)
-        spacing = (0.5, 0.75)
-        _write_mha(images_dir / "00099_Frame.mha", arr, origin=origin, spacing=spacing)
+        origin = (10.0, 20.0, 30.0)
+        spacing = (0.5, 0.75, 5.0)
+        _write_mha_3d(
+            images_dir / "00099_Frame.mha", arr,
+            direction=SAGITTAL_DIRECTION, origin=origin, spacing=spacing,
+        )
 
         imaging.save_annotations(
             str(tmp_input_dir), "00099", [],
@@ -217,6 +317,19 @@ class TestSaveAnnotations:
         result = sitk.ReadImage(str(out))
         assert tuple(result.GetOrigin()) == origin
         assert tuple(result.GetSpacing()) == spacing
+
+    def test_preserves_direction_cosines(self, tmp_input_dir):
+        """Without the slice normal the saved annotation's plane is unrecoverable."""
+        imaging.save_annotations(
+            str(tmp_input_dir), "00002", [],
+            {}, "00002_Frame.mha",
+        )
+        out = tmp_input_dir / "Annotations" / "00002_annotation.mha"
+        result = sitk.ReadImage(str(out))
+        assert result.GetDimension() == 3
+        assert tuple(result.GetDirection()) == CORONAL_DIRECTION
+        # The saved file must round-trip back to the plane it was annotated on.
+        assert imaging._read_plane(str(out)) == "coronal"
 
     def test_mask_pixel_values(self, tmp_input_dir):
         mask_b64 = self._make_mask_b64(8, 8, value=255)

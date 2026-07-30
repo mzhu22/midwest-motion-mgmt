@@ -81,6 +81,7 @@ Annotations/
 
 ## Assumptions
 
-- Images are 2D `.mha` files that begin with a 5-digit frame index `NNNNN_`, e.g., `01531_Frame_ID_1f44a857-3d35-4212-b005-f49928310a10_118.1916_(ms).mha`
-- Odd-numbered images are sagittal, even-numbered are coronal, in order. E.g., frames 1, 3, 5, ... are consecutive frames from the sagittal scan.
+- Images are single-slice 3D `.mha` files (`DimSize = W H 1`) that begin with a 5-digit frame index `NNNNN_`, e.g., `01531_Frame_ID_1f44a857-3d35-4212-b005-f49928310a10_118.1916_(ms).mha`
+- Each image's plane is read from its direction cosines: the slice normal (third column of the MHA `TransformMatrix`) points along L/R for sagittal and A/P for coronal. Frames whose plane cannot be determined — 2D images, or oblique acquisitions with no dominant anatomical axis — are rejected rather than guessed at.
+- Frame index parity is *not* used to identify the plane. The two stacks are interleaved, so odd frames happen to be sagittal in the reference dataset, but that only holds while the series is gap-free; a single dropped frame would invert the mapping for everything after it.
 - `TargetStructure/` contains one file for each image frame, starting from the first index in `RegistrationStructure`

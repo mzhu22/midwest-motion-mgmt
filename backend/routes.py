@@ -50,9 +50,10 @@ def load_folder():
     if not images_dir.is_dir() or not target_dir.is_dir():
         return jsonify({"error": "Invalid folder: missing TwoDImages or TargetStructure"}), 400
 
-    frames = imaging.find_frames_with_targets(folder_path)
-    if len(frames) < 2:
-        return jsonify({"error": "Need at least 2 frames with target structures"}), 400
+    try:
+        frames = imaging.find_frames_with_targets(folder_path)
+    except imaging.PlaneDetectionError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     for frame in frames:
         img_path = str(images_dir / frame["image_file"])

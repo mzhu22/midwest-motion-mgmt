@@ -59,6 +59,8 @@ Backend tests use synthetic MHA images built with SimpleITK in fixtures (`tests/
 ## Key conventions
 
 - Images use the MHA format (MetaImage). The project convention: 0 = positive (object), 255 = negative (background) for contours/targets.
-- Frame indices are 5-digit zero-padded prefixes (e.g., `00285`). Odd = sagittal, even = coronal.
+- Frame indices are 5-digit zero-padded prefixes (e.g., `00285`).
+- Sagittal vs. coronal is read from each image's direction cosines, never from the frame index: `_read_plane` in `backend/imaging.py` takes the slice normal (`GetDirection()` column 2) and maps L/R → sagittal, A/P → coronal. Undeterminable frames raise `PlaneDetectionError`, which `/api/load-folder` returns as a 400. Parity would silently invert if a frame were ever dropped, and the reference dataset already has index gaps.
+- Plane comes from the image in `TwoDImages/`, not from its structure mask — at least one mask in the reference dataset carries the wrong stack's geometry.
 - The frontend uses a fixed display scale of 2x (defined as `DISPLAY_SCALE` in `AnnotationCanvas`).
 - Up to 8 annotation objects per frame, each with a distinct color from the `COLORS` array in `types.ts`.

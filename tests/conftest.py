@@ -11,16 +11,44 @@ from backend.app import create_app
 from backend import routes
 
 
-def _write_mha(path: Path, arr: np.ndarray, origin=(0.0, 0.0), spacing=(1.0, 1.0)):
+# SimpleITK direction cosines matching the real MR-Linac cine frames. These are the
+# transpose of the MHA header's TransformMatrix: GetDirection/SetDirection hold the
+# i/j/k axis cosines as columns, so column 2 is the slice normal.
+SAGITTAL_DIRECTION = (0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0)  # normal (-1,0,0) L/R
+CORONAL_DIRECTION = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0)  # normal (0,1,0) A/P
+_R2 = 2**0.5 / 2
+# Normal (-0.707, 0, 0.707): 45 degrees between the L/R and S/I axes, so no axis wins.
+OBLIQUE_DIRECTION = (0.0, -_R2, -_R2, 1.0, 0.0, 0.0, 0.0, -_R2, _R2)
+
+
+def _write_mha_3d(
+    path: Path,
+    arr: np.ndarray,
+    direction=SAGITTAL_DIRECTION,
+    origin=(0.0, 0.0, 0.0),
+    spacing=(1.0, 1.0, 1.0),
+):
+    """Write a 2D slice as a 3D (1, H, W) MHA, the shape the real cine frames use.
+
+    Plane detection needs a slice normal, which only a 3D image can express.
+    """
+    img = sitk.GetImageFromArray(arr[None, :, :])
+    img.SetOrigin(origin)
+    img.SetSpacing(spacing)
+    img.SetDirection(direction)
+    sitk.WriteImage(img, str(path))
+
+
+def _write_mha_2d(path: Path, arr: np.ndarray, origin=(0.0, 0.0), spacing=(1.0, 1.0)):
+    """Write a plain 2D MHA — has no slice normal, so plane detection must reject it."""
     img = sitk.GetImageFromArray(arr)
     img.SetOrigin(origin)
     img.SetSpacing(spacing)
     sitk.WriteImage(img, str(path))
 
 
-@pytest.fixture()
-def tmp_input_dir(tmp_path):
-    """Build a minimal MHA folder structure with two frames (one sagittal, one coronal)."""
+def _make_frame_dir(tmp_path, planes: dict[str, tuple]):
+    """Build a TwoDImages folder with one image+target per given prefix -> direction."""
     images_dir = tmp_path / "TwoDImages"
     target_dir = images_dir / "TargetStructure"
     reg_dir = images_dir / "RegistrationStructure"
@@ -30,16 +58,25 @@ def tmp_input_dir(tmp_path):
 
     rng = np.random.RandomState(42)
 
-    for prefix in ("00001", "00002"):
+    for prefix, direction in planes.items():
         image_arr = rng.randint(0, 256, (8, 8), dtype=np.uint8)
-        _write_mha(images_dir / f"{prefix}_Frame.mha", image_arr)
+        _write_mha_3d(images_dir / f"{prefix}_Frame.mha", image_arr, direction=direction)
 
         mask_arr = np.full((8, 8), 255, dtype=np.uint8)
         mask_arr[2:6, 2:6] = 0
-        _write_mha(target_dir / f"{prefix}_Frame.mha", mask_arr)
-        _write_mha(reg_dir / f"{prefix}_Frame.mha", mask_arr)
+        _write_mha_3d(target_dir / f"{prefix}_Frame.mha", mask_arr, direction=direction)
+        _write_mha_3d(reg_dir / f"{prefix}_Frame.mha", mask_arr, direction=direction)
 
     return tmp_path
+
+
+@pytest.fixture()
+def tmp_input_dir(tmp_path):
+    """Build a minimal MHA folder structure with two frames (one sagittal, one coronal)."""
+    return _make_frame_dir(
+        tmp_path,
+        {"00001": SAGITTAL_DIRECTION, "00002": CORONAL_DIRECTION},
+    )
 
 
 @pytest.fixture()

@@ -4,7 +4,10 @@ import base64
 import io
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 from PIL import Image
+
+from tests.conftest import SAGITTAL_DIRECTION, _make_frame_dir, _write_mha_2d
 
 
 # --- GET /api/browse-folder ---
@@ -87,6 +90,30 @@ class TestLoadFolder:
         target_dir.mkdir()
         resp = client.post("/api/load-folder", json={"folder_path": str(tmp_path)})
         assert resp.status_code == 400
+
+    def test_undeterminable_plane_returns_400_with_message(self, client, tmp_path):
+        images_dir = tmp_path / "TwoDImages"
+        target_dir = images_dir / "TargetStructure"
+        images_dir.mkdir()
+        target_dir.mkdir()
+        arr = np.zeros((8, 8), dtype=np.uint8)
+        _write_mha_2d(images_dir / "00001_Frame.mha", arr)
+        _write_mha_2d(target_dir / "00001_Frame.mha", arr)
+
+        resp = client.post("/api/load-folder", json={"folder_path": str(tmp_path)})
+        assert resp.status_code == 400
+        error = resp.get_json()["error"]
+        assert "00001_Frame.mha" in error
+        assert "imaging plane" in error
+
+    def test_single_plane_series_returns_400(self, client, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {"00001": SAGITTAL_DIRECTION, "00003": SAGITTAL_DIRECTION},
+        )
+        resp = client.post("/api/load-folder", json={"folder_path": str(tmp_path)})
+        assert resp.status_code == 400
+        assert "coronal" in resp.get_json()["error"]
 
 
 # --- GET /api/frame/<idx>/image ---
