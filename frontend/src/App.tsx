@@ -12,6 +12,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [replacedCount, setReplacedCount] = useState(0);
   const [error, setError] = useState("");
   const [labels, setLabels] = useState<string[]>(["target", ...Array(7).fill("")]);
   const [activeColorIndex, setActiveColorIndex] = useState(0);
@@ -116,6 +117,7 @@ export default function App() {
         setError(data.error || "Save failed");
       } else {
         setSavedPath(data.path ?? null);
+        setReplacedCount(data.replaced?.length ?? 0);
       }
     } catch (e) {
       setError("Failed to save");
@@ -167,6 +169,7 @@ export default function App() {
             onSave={handleSave}
             saving={saving}
             savedPath={savedPath}
+            replacedCount={replacedCount}
           />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}>
             {frames.map((frame, i) => (

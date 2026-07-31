@@ -47,8 +47,13 @@ def _write_mha_2d(path: Path, arr: np.ndarray, origin=(0.0, 0.0), spacing=(1.0, 
     sitk.WriteImage(img, str(path))
 
 
-def _make_frame_dir(tmp_path, planes: dict[str, tuple]):
-    """Build a TwoDImages folder with one image+target per given prefix -> direction."""
+def _make_frame_dir(tmp_path, planes: dict[str, tuple], target_planes: dict[str, tuple] | None = None):
+    """Build a TwoDImages folder with one image+target per given prefix -> direction.
+
+    target_planes overrides the direction written to a prefix's target mask, so a
+    frame whose mask carries the wrong stack's geometry can be reproduced. Defaults
+    to the image's direction, which is the healthy case.
+    """
     images_dir = tmp_path / "TwoDImages"
     target_dir = images_dir / "TargetStructure"
     reg_dir = images_dir / "RegistrationStructure"
@@ -57,6 +62,7 @@ def _make_frame_dir(tmp_path, planes: dict[str, tuple]):
     reg_dir.mkdir()
 
     rng = np.random.RandomState(42)
+    target_planes = target_planes or {}
 
     for prefix, direction in planes.items():
         image_arr = rng.randint(0, 256, (8, 8), dtype=np.uint8)
@@ -64,8 +70,9 @@ def _make_frame_dir(tmp_path, planes: dict[str, tuple]):
 
         mask_arr = np.full((8, 8), 255, dtype=np.uint8)
         mask_arr[2:6, 2:6] = 0
-        _write_mha_3d(target_dir / f"{prefix}_Frame.mha", mask_arr, direction=direction)
-        _write_mha_3d(reg_dir / f"{prefix}_Frame.mha", mask_arr, direction=direction)
+        mask_direction = target_planes.get(prefix, direction)
+        _write_mha_3d(target_dir / f"{prefix}_Frame.mha", mask_arr, direction=mask_direction)
+        _write_mha_3d(reg_dir / f"{prefix}_Frame.mha", mask_arr, direction=mask_direction)
 
     return tmp_path
 

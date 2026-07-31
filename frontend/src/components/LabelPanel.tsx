@@ -8,6 +8,7 @@ interface Props {
   onSave: () => void;
   saving: boolean;
   savedPath: string | null;
+  replacedCount: number;
 }
 
 export default function LabelPanel({
@@ -18,6 +19,7 @@ export default function LabelPanel({
   onSave,
   saving,
   savedPath,
+  replacedCount,
 }: Props) {
   return (
     <div style={{ padding: 12, minWidth: 240, flex: "0 0 auto" }}>
@@ -105,6 +107,12 @@ export default function LabelPanel({
             }}
           >
             Saved to: {savedPath}
+            {replacedCount > 0 && (
+              <div style={{ color: "#a16207", marginTop: 4 }}>
+                Cleared {replacedCount} file{replacedCount === 1 ? "" : "s"} from
+                a previous save.
+              </div>
+            )}
           </div>
         )}
       </div>

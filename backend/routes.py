@@ -99,6 +99,11 @@ def save():
         return jsonify({"error": "No folder loaded"}), 400
 
     labels = data.get("labels", {})
+
+    # Clear once up front, not per frame: a save writes a full sagittal/coronal pair
+    # and stale masks from an earlier run would mis-seed tracking downstream.
+    removed = imaging.clear_annotations(folder)
+
     for frame_data in data.get("frames", []):
         idx = frame_data["frame_index"]
         masks = frame_data.get("masks", [])
@@ -108,4 +113,4 @@ def save():
         imaging.save_annotations(folder, idx, masks, labels, frame["image_file"])
 
     annotations_dir = str(Path(folder) / "Annotations")
-    return jsonify({"status": "ok", "path": annotations_dir})
+    return jsonify({"status": "ok", "path": annotations_dir, "replaced": removed})

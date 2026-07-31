@@ -62,7 +62,7 @@ export default function FrameViewer({
               flexShrink: 0,
             }}
           />
-          ✕ Clear contour
+          ✕ Clear
         </button>
       </div>
       <AnnotationCanvas

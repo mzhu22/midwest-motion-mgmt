@@ -89,24 +89,166 @@ class TestFindFramesWithTargets:
         by_index = {f["frame_index"]: f["plane"] for f in frames}
         assert by_index == {"00002": "sagittal", "00003": "coronal"}
 
-    def test_returns_sagittal_first_regardless_of_index_order(self, tmp_path):
+    def test_coronal_before_sagittal_only_is_rejected(self, tmp_path):
+        """The coronal frame must follow the sagittal one, so this pair is unusable.
+
+        Returning them plane-ordered would put frame 00010 to the right of 00011.
+        """
         _make_frame_dir(
             tmp_path,
             {"00010": CORONAL_DIRECTION, "00011": SAGITTAL_DIRECTION},
         )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["plane"] for f in frames] == ["sagittal", "coronal"]
-        assert [f["frame_index"] for f in frames] == ["00011", "00010"]
+        with pytest.raises(imaging.PlaneDetectionError, match="No such pair was found"):
+            imaging.find_frames_with_targets(str(tmp_path))
 
-    def test_tolerates_missing_frames(self, tmp_path):
-        """A gap must not break plane assignment the way index parity would."""
+    def test_pair_is_sagittal_then_coronal_in_ascending_index_order(self, tmp_path):
         _make_frame_dir(
             tmp_path,
-            {"00286": CORONAL_DIRECTION, "00287": SAGITTAL_DIRECTION},
+            {
+                "00010": CORONAL_DIRECTION,
+                "00011": SAGITTAL_DIRECTION,
+                "00012": CORONAL_DIRECTION,
+            },
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["plane"] for f in frames] == ["sagittal", "coronal"]
+        assert [f["frame_index"] for f in frames] == ["00011", "00012"]
+
+    def test_leading_coronal_is_passed_over(self, tmp_path):
+        """A series starting on coronal still yields a sagittal-first pair."""
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00286": CORONAL_DIRECTION,
+                "00287": SAGITTAL_DIRECTION,
+                "00288": CORONAL_DIRECTION,
+            },
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00287", "00288"]
+
+    def test_frame_whose_target_carries_wrong_geometry_is_skipped(self, tmp_path):
+        """Reproduces frame 00285 in the reference dataset.
+
+        Its mask carries 00286's geometry, so a coronal contour would be drawn over a
+        sagittal image. The next clean sagittal/coronal pair must be used instead.
+        """
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00285": SAGITTAL_DIRECTION,
+                "00286": CORONAL_DIRECTION,
+                "00287": SAGITTAL_DIRECTION,
+                "00288": CORONAL_DIRECTION,
+            },
+            target_planes={"00285": CORONAL_DIRECTION},
+        )
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00287", "00288"]
+
+    def test_target_without_slice_normal_is_skipped_not_raised(self, tmp_path):
+        """A 2D mask cannot express a plane; skip that frame rather than failing."""
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00001": SAGITTAL_DIRECTION,
+                "00002": CORONAL_DIRECTION,
+                "00003": SAGITTAL_DIRECTION,
+                "00004": CORONAL_DIRECTION,
+            },
+        )
+        target = tmp_path / "TwoDImages" / "TargetStructure" / "00001_Frame.mha"
+        target.unlink()
+        _write_mha_2d(target, np.full((8, 8), 255, dtype=np.uint8))
+
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00003", "00004"]
+
+    def test_unreadable_image_plane_still_raises(self, tmp_path):
+        """The skip path must not swallow an image-side plane failure."""
+        _make_frame_dir(
+            tmp_path,
+            {"00001": OBLIQUE_DIRECTION, "00002": CORONAL_DIRECTION},
+        )
+        with pytest.raises(imaging.PlaneDetectionError, match="oblique"):
+            imaging.find_frames_with_targets(str(tmp_path))
+
+    def test_error_names_the_frames_skipped_for_bad_geometry(self, tmp_path):
+        """The message reports the frames it actually rejected, so a bad dataset is
+        diagnosable rather than just 'no pair found'.
+
+        Only frames the scan reached are counted: 00002 is never evaluated because
+        00001 disqualifies the pair before its partner is checked.
+        """
+        _make_frame_dir(
+            tmp_path,
+            {"00001": SAGITTAL_DIRECTION, "00002": CORONAL_DIRECTION},
+            target_planes={
+                "00001": CORONAL_DIRECTION,
+                "00002": SAGITTAL_DIRECTION,
+            },
+        )
+        with pytest.raises(imaging.PlaneDetectionError) as exc:
+            imaging.find_frames_with_targets(str(tmp_path))
+        assert "1 frame(s) were skipped" in str(exc.value)
+        assert "00001" in str(exc.value)
+
+    def test_series_need_not_start_at_index_one(self, tmp_path):
+        """Index numbering with holes must not break plane assignment.
+
+        The reference series resumes at 00285 after a gap; parity-based assignment
+        would be a coin flip there, geometry is not.
+        """
+        _make_frame_dir(
+            tmp_path,
+            {"00287": SAGITTAL_DIRECTION, "00288": CORONAL_DIRECTION},
         )
         frames = imaging.find_frames_with_targets(str(tmp_path))
         by_index = {f["frame_index"]: f["plane"] for f in frames}
-        assert by_index == {"00287": "sagittal", "00286": "coronal"}
+        assert by_index == {"00287": "sagittal", "00288": "coronal"}
+
+    def test_non_adjacent_pair_is_rejected(self, tmp_path):
+        """An intervening coronal image would be the real start of the coronal stack.
+
+        Downstream takes each plane's start from the images on disk, not from which
+        frame we annotated, so pairing 00287 with 00290 across a coronal 00288 would
+        seed the coronal tracker at 00288 with a mask drawn on 00290.
+        """
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00287": SAGITTAL_DIRECTION,
+                "00288": CORONAL_DIRECTION,
+                "00289": SAGITTAL_DIRECTION,
+                "00290": CORONAL_DIRECTION,
+            },
+            target_planes={"00288": SAGITTAL_DIRECTION},
+        )
+        # 00288's mask is bad, so 00287 has no usable partner; the next clean adjacent
+        # pair is 00289/00290 rather than 00287/00290.
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00289", "00290"]
+
+    def test_adjacency_counts_images_without_targets(self, tmp_path):
+        """A target-less image between the pair still breaks adjacency.
+
+        Downstream iterates every image in TwoDImages, so a frame we cannot annotate
+        still anchors the stack start.
+        """
+        _make_frame_dir(
+            tmp_path,
+            {
+                "00287": SAGITTAL_DIRECTION,
+                "00288": CORONAL_DIRECTION,
+                "00289": SAGITTAL_DIRECTION,
+                "00290": CORONAL_DIRECTION,
+            },
+        )
+        # Remove 00288's target: it stays on disk as an image, so 00287 is stranded.
+        (tmp_path / "TwoDImages" / "TargetStructure" / "00288_Frame.mha").unlink()
+
+        frames = imaging.find_frames_with_targets(str(tmp_path))
+        assert [f["frame_index"] for f in frames] == ["00289", "00290"]
 
     def test_frame_has_required_keys(self, tmp_input_dir):
         frames = imaging.find_frames_with_targets(str(tmp_input_dir))
@@ -264,6 +406,58 @@ class TestGetImageDimensions:
 
 
 # --- save_annotations ---
+
+class TestClearAnnotations:
+    def test_removes_the_directory_and_reports_what_was_in_it(self, tmp_input_dir):
+        imaging.save_annotations(
+            str(tmp_input_dir), "00001", [], {"0": "tumor"}, "00001_Frame.mha",
+        )
+        imaging.save_annotations(
+            str(tmp_input_dir), "00002", [], {"0": "tumor"}, "00002_Frame.mha",
+        )
+
+        removed = imaging.clear_annotations(str(tmp_input_dir))
+
+        assert removed == [
+            "00001_annotation.mha",
+            "00002_annotation.mha",
+            "labels.json",
+        ]
+        assert not (tmp_input_dir / "Annotations").exists()
+
+    def test_removes_unrelated_files_too(self, tmp_input_dir):
+        """The clear is wholesale, so anything an earlier run or the OS left goes."""
+        annotations_dir = tmp_input_dir / "Annotations"
+        annotations_dir.mkdir()
+        (annotations_dir / ".DS_Store").write_bytes(b"junk")
+        (annotations_dir / "notes.txt").write_text("scratch")
+
+        removed = imaging.clear_annotations(str(tmp_input_dir))
+
+        assert removed == [".DS_Store", "notes.txt"]
+        assert not annotations_dir.exists()
+
+    def test_missing_directory_is_not_an_error(self, tmp_input_dir):
+        assert imaging.clear_annotations(str(tmp_input_dir)) == []
+
+    def test_a_save_after_clearing_leaves_only_the_new_pair(self, tmp_input_dir):
+        """The reference case: a stale 00285/00286 pair must not survive into a
+        00287/00288 save, or downstream seeds each stack from the wrong frame."""
+        for idx in ("00285", "00286"):
+            imaging.save_annotations(
+                str(tmp_input_dir), idx, [], {"0": "tumor"}, "00001_Frame.mha",
+            )
+
+        imaging.clear_annotations(str(tmp_input_dir))
+        for idx in ("00287", "00288"):
+            imaging.save_annotations(
+                str(tmp_input_dir), idx, [], {"0": "tumor"}, "00001_Frame.mha",
+            )
+
+        annotations_dir = tmp_input_dir / "Annotations"
+        names = sorted(p.name for p in annotations_dir.glob("*_annotation.mha"))
+        assert names == ["00287_annotation.mha", "00288_annotation.mha"]
+
 
 class TestSaveAnnotations:
     def _make_mask_b64(self, w, h, value=255):

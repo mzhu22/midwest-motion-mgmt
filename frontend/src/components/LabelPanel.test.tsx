@@ -11,6 +11,7 @@ const defaultProps = {
   onSave: vi.fn(),
   saving: false,
   savedPath: null as string | null,
+  replacedCount: 0,
 };
 
 function renderPanel(overrides: Partial<typeof defaultProps> = {}) {
@@ -98,5 +99,20 @@ describe("LabelPanel", () => {
   it("does not show save message when savedPath is null", () => {
     renderPanel({ savedPath: null });
     expect(screen.queryByText(/Saved to:/)).not.toBeInTheDocument();
+  });
+
+  it("reports how many stale files the save cleared", () => {
+    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 3 });
+    expect(screen.getByText(/Cleared 3 files/)).toBeInTheDocument();
+  });
+
+  it("singularizes the cleared-file notice", () => {
+    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 1 });
+    expect(screen.getByText(/Cleared 1 file from/)).toBeInTheDocument();
+  });
+
+  it("omits the cleared notice when the folder was already empty", () => {
+    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 0 });
+    expect(screen.queryByText(/Cleared/)).not.toBeInTheDocument();
   });
 });

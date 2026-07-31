@@ -190,3 +190,48 @@ class TestSave:
         })
         assert resp.status_code == 200
         assert not (tmp_input_dir / "Annotations").exists()
+
+    def test_save_replaces_stale_annotations_from_a_previous_run(
+        self, loaded_client, tmp_input_dir
+    ):
+        """A save is a full replacement: masks from an earlier run must not survive.
+
+        Downstream takes its start frame from min(annotation index), so a leftover
+        with a lower index drags both stacks back and mis-seeds tracking.
+        """
+        annotations_dir = tmp_input_dir / "Annotations"
+        annotations_dir.mkdir()
+        (annotations_dir / "00285_annotation.mha").write_bytes(b"stale")
+
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"0": "tumor"},
+            "frames": [
+                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
+            ],
+        })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["replaced"] == ["00285_annotation.mha"]
+        assert sorted(p.name for p in annotations_dir.glob("*.mha")) == [
+            "00001_annotation.mha",
+        ]
+
+    def test_a_two_frame_save_keeps_both_frames(self, loaded_client, tmp_input_dir):
+        """Clearing runs once per save, not once per frame.
+
+        save_annotations is called in a loop, so a clear living inside it would
+        delete the first frame's output while writing the second.
+        """
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"0": "tumor"},
+            "frames": [
+                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
+                {"frame_index": "00002", "masks": [self._make_mask_b64()]},
+            ],
+        })
+
+        assert resp.status_code == 200
+        assert resp.get_json()["replaced"] == []
+        assert sorted(
+            p.name for p in (tmp_input_dir / "Annotations").glob("*.mha")
+        ) == ["00001_annotation.mha", "00002_annotation.mha"]

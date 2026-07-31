@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -55,11 +56,39 @@ def _read_plane(filepath: str) -> str:
     return _PLANE_BY_NORMAL_AXIS[axis]
 
 
+def _target_plane_matches(target_path: str, plane: str) -> bool:
+    """Return whether the target mask's geometry agrees with its image's plane.
+
+    The plane itself always comes from the image; this is only a consistency check.
+    A mask whose plane cannot be read at all counts as a mismatch rather than an
+    error, so one unusable mask does not sink a series of otherwise good frames.
+    """
+    try:
+        return _read_plane(target_path) == plane
+    except PlaneDetectionError:
+        return False
+
+
 def find_frames_with_targets(input_dir: str) -> list[dict]:
-    """Find one sagittal and one coronal frame that both have a target structure.
+    """Find the first adjacent sagittal -> coronal frame pair, both with good targets.
 
     Planes come from each image's direction cosines rather than its index, so a
-    series with missing or skipped frames still yields one frame per plane.
+    series whose numbering has holes still yields the right plane per frame.
+
+    Three conditions, each load-bearing:
+
+    - Each frame's target mask geometry must agree with its image's. At least one
+      mask in the reference dataset carries the wrong stack's geometry, which would
+      draw a coronal contour over a sagittal image.
+    - Sagittal must come first, so plane order and index order agree and the two
+      panels cannot read backwards relative to acquisition.
+    - The two must be *adjacent* in the image series, with no frame of any plane
+      between them. Downstream (mr-linac-iowa) starts each plane's stack at the
+      first image of that plane at or after min(annotation index) and seeds the
+      tracker from frame 0 of that stack, so an intervening coronal image would
+      leave the coronal tracker seeded with a mask drawn on a later frame. Adjacency
+      is checked against every image on disk, not just those carrying targets,
+      because that is what the downstream stack walk iterates.
     """
     images_dir = Path(input_dir) / "TwoDImages"
     target_dir = images_dir / "TargetStructure"
@@ -74,35 +103,57 @@ def find_frames_with_targets(input_dir: str) -> list[dict]:
         if f.is_file() and f.suffix == ".mha":
             target_map[f.name[:5]] = f.name
 
-    common = sorted(image_map.keys() & target_map.keys(), key=int)
+    ordered = sorted(image_map, key=int)
+    common = image_map.keys() & target_map.keys()
 
-    # Keep the first frame of each plane. Structure masks are not consulted: at
-    # least one in the reference dataset carries the wrong stack's geometry.
-    found: dict[str, dict] = {}
-    for prefix in common:
+    mismatched: set[str] = set()
+
+    def candidate(prefix: str, want: str) -> dict | None:
+        """Return the frame if it is `want` plane with an agreeing target, else None."""
+        if prefix not in common:
+            return None
+        # A plane unreadable from the image is fatal; unreadable from the mask is not.
         plane = _read_plane(str(images_dir / image_map[prefix]))
-        found.setdefault(
-            plane,
-            {
-                "frame_index": prefix,
-                "plane": plane,
-                "image_file": image_map[prefix],
-                "target_file": target_map[prefix],
-            },
-        )
-        if "sagittal" in found and "coronal" in found:
-            break
+        if plane != want:
+            return None
+        if not _target_plane_matches(str(target_dir / target_map[prefix]), plane):
+            mismatched.add(prefix)
+            return None
+        return {
+            "frame_index": prefix,
+            "plane": plane,
+            "image_file": image_map[prefix],
+            "target_file": target_map[prefix],
+        }
 
-    missing = [p for p in ("sagittal", "coronal") if p not in found]
-    if missing:
-        detected = ", ".join(sorted(found)) if found else "none"
-        raise PlaneDetectionError(
-            f"Need one sagittal and one coronal frame with target structures, but no "
-            f"{' or '.join(missing)} frame was found; detected planes: {detected} "
-            f"({len(common)} frames checked)."
-        )
+    for first, second in zip(ordered, ordered[1:]):
+        sagittal = candidate(first, "sagittal")
+        if sagittal is None:
+            continue
+        coronal = candidate(second, "coronal")
+        if coronal is not None:
+            return [sagittal, coronal]
 
-    return [found["sagittal"], found["coronal"]]
+    # No pair found. The scan is lazy and stops at the first frame that disqualifies a
+    # pair, so it may never have read some images' geometry — including, when there is
+    # only one frame, any image at all. Read the rest now so an unreadable image plane
+    # surfaces as its own specific error instead of the generic "no pair" one below.
+    for prefix in sorted(common, key=int):
+        _read_plane(str(images_dir / image_map[prefix]))
+
+    skipped = (
+        f" {len(mismatched)} frame(s) were skipped because the target mask's geometry "
+        f"did not match its image: {', '.join(sorted(mismatched))}."
+        if mismatched
+        else ""
+    )
+    raise PlaneDetectionError(
+        f"Need two adjacent frames — a sagittal one immediately followed by a coronal "
+        f"one — where both have a target structure whose geometry matches its image. "
+        f"No such pair was found in {len(ordered)} frames ({len(common)} with targets). "
+        f"The pair must be adjacent so downstream tracking seeds each plane on its own "
+        f"first frame.{skipped}"
+    )
 
 
 def read_mha_as_png(filepath: str) -> bytes:
@@ -145,6 +196,27 @@ def get_image_dimensions(filepath: str) -> tuple[int, int]:
     img = sitk.ReadImage(filepath)
     arr = sitk.GetArrayFromImage(img).squeeze()
     return int(arr.shape[1]), int(arr.shape[0])
+
+
+def clear_annotations(input_dir: str) -> list[str]:
+    """Delete the whole Annotations directory so a save is a complete replacement.
+
+    Downstream (mr-linac-iowa) takes its start frame from min(annotation index) but
+    seeds each plane's tracker from the *last* annotation matching that plane, so a
+    leftover file from an earlier run silently seeds the wrong frame. A save writes a
+    full pair plus labels.json, so nothing in here is worth keeping.
+
+    The directory is not recreated; save_annotations mkdirs it before writing.
+
+    Returns the names removed, top level only.
+    """
+    annotations_dir = Path(input_dir) / "Annotations"
+    if not annotations_dir.is_dir():
+        return []
+
+    removed = sorted(p.name for p in annotations_dir.iterdir())
+    shutil.rmtree(annotations_dir)
+    return removed
 
 
 def save_annotations(
