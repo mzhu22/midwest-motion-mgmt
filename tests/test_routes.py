@@ -165,14 +165,53 @@ class TestSave:
 
     def test_save_success(self, loaded_client, tmp_input_dir):
         resp = loaded_client.post("/api/save", json={
-            "labels": {"0": "tumor"},
+            "labels": {"1": "tumor"},
             "frames": [
-                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
+                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
             ],
         })
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "ok"
         assert (tmp_input_dir / "Annotations" / "00001_annotation.mha").exists()
+
+    def test_save_with_no_object_contours_is_rejected(self, loaded_client, tmp_input_dir):
+        """A save that draws nothing adds nothing: the target already comes from the image."""
+        resp = loaded_client.post("/api/save", json={
+            "labels": {},
+            "frames": [
+                {"frame_index": "00001", "masks": ["", "", ""]},
+                {"frame_index": "00002", "masks": []},
+            ],
+        })
+        assert resp.status_code == 400
+        assert "object contours" in resp.get_json()["error"]
+        assert not (tmp_input_dir / "Annotations").exists()
+
+    def test_a_target_only_save_is_rejected(self, loaded_client):
+        """Object 0 is dropped on write, so a mask there does not make the save non-empty."""
+        resp = loaded_client.post("/api/save", json={
+            "labels": {},
+            "frames": [
+                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
+            ],
+        })
+        assert resp.status_code == 400
+
+    def test_a_rejected_save_leaves_an_earlier_save_intact(
+        self, loaded_client, tmp_input_dir
+    ):
+        """The guard runs before clear_annotations, so a bad save cannot destroy a good one."""
+        annotations_dir = tmp_input_dir / "Annotations"
+        annotations_dir.mkdir()
+        (annotations_dir / "00001_annotation.mha").write_bytes(b"earlier")
+
+        resp = loaded_client.post("/api/save", json={
+            "labels": {},
+            "frames": [{"frame_index": "00001", "masks": ["", ""]}],
+        })
+
+        assert resp.status_code == 400
+        assert (annotations_dir / "00001_annotation.mha").read_bytes() == b"earlier"
 
     def test_save_no_folder_loaded(self, client):
         resp = client.post("/api/save", json={
@@ -185,7 +224,7 @@ class TestSave:
         resp = loaded_client.post("/api/save", json={
             "labels": {},
             "frames": [
-                {"frame_index": "99999", "masks": []},
+                {"frame_index": "99999", "masks": ["", self._make_mask_b64()]},
             ],
         })
         assert resp.status_code == 200
@@ -204,9 +243,9 @@ class TestSave:
         (annotations_dir / "00285_annotation.mha").write_bytes(b"stale")
 
         resp = loaded_client.post("/api/save", json={
-            "labels": {"0": "tumor"},
+            "labels": {"1": "tumor"},
             "frames": [
-                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
+                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
             ],
         })
 
@@ -223,10 +262,10 @@ class TestSave:
         delete the first frame's output while writing the second.
         """
         resp = loaded_client.post("/api/save", json={
-            "labels": {"0": "tumor"},
+            "labels": {"1": "tumor"},
             "frames": [
-                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
-                {"frame_index": "00002", "masks": [self._make_mask_b64()]},
+                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
+                {"frame_index": "00002", "masks": ["", self._make_mask_b64()]},
             ],
         })
 

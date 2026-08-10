@@ -79,7 +79,7 @@ describe("App save validation", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows an error for each frame with no contours drawn", async () => {
+  it("shows an error when no object contour was drawn on either frame", async () => {
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
@@ -87,9 +87,10 @@ describe("App save validation", () => {
     await user.click(screen.getByRole("button", { name: /save annotations/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/no contour drawn on 00001/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/draw at least one object contour/i)
+      ).toBeInTheDocument();
     });
-    expect(screen.getByText(/no contour drawn on 00002/i)).toBeInTheDocument();
   });
 
   it("does not call /api/save when validation fails", async () => {
@@ -100,9 +101,25 @@ describe("App save validation", () => {
     await user.click(screen.getByRole("button", { name: /save annotations/i }));
 
     await waitFor(() =>
-      expect(screen.getByText(/no contour drawn/i)).toBeInTheDocument()
+      expect(screen.getByText(/draw at least one object contour/i)).toBeInTheDocument()
     );
     expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/save", expect.anything());
+  });
+
+  it("saves an object drawn on only one frame", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    // One enclosed contour on the sagittal frame only; the coronal frame stays empty.
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(screen.getAllByPlaceholderText(/Object \d/)[0]!, "liver");
+
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/save", expect.anything())
+    );
   });
 });
 
@@ -160,19 +177,31 @@ describe("App contour clearing", () => {
     render(<App />);
     await loadFrames(user);
 
-    // Draw object 0 (target), then switch to object 1 and draw that too.
+    // Draw object 1 (active by default), then switch to object 2 and draw that too.
+    const labelInputs = () => screen.getAllByPlaceholderText(/Object \d/);
     await user.click(screen.getByRole("button", { name: "draw-00001" }));
-    await user.click(screen.getAllByPlaceholderText(/Object \d/)[0]!);
+    await user.click(labelInputs()[1]!);
     await user.click(screen.getByRole("button", { name: "draw-00001" }));
 
-    // Object 1 is active and has strokes, so clearing it is offered.
+    // Object 2 is active and has strokes, so clearing it is offered.
     const sagittalClear = () => screen.getAllByRole("button", { name: /clear/i })[0]!;
     expect(sagittalClear()).toBeEnabled();
     await user.click(sagittalClear());
     expect(sagittalClear()).toBeDisabled();
 
-    // Switching back to object 0 shows its contour survived.
-    await user.click(screen.getByText("target"));
+    // Switching back to object 1 shows its contour survived.
+    await user.click(labelInputs()[0]!);
     expect(sagittalClear()).toBeEnabled();
+  });
+
+  it("never offers the target as a drawable object", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    // The legend names it, but there is no input and no way to select it.
+    expect(screen.getByText(/target — reference only/i)).toBeInTheDocument();
+    expect(screen.getAllByPlaceholderText(/Object \d/)).toHaveLength(7);
+    expect(screen.queryByPlaceholderText("Object 0")).not.toBeInTheDocument();
   });
 });

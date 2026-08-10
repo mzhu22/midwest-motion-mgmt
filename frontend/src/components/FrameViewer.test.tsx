@@ -63,7 +63,11 @@ describe("FrameViewer", () => {
 
   it("labels the clear button with the active object", () => {
     renderViewer({ activeColorIndex: 2, activeLabel: "bladder" });
-    expect(screen.getByRole("button", { name: /clear.*bladder/i })).toBeInTheDocument();
+    // The visible text is just "✕ Clear" — which object it acts on is in the tooltip.
+    expect(screen.getByRole("button", { name: /clear/i })).toHaveAttribute(
+      "title",
+      expect.stringContaining("bladder")
+    );
   });
 
   it("disables the clear button when the active object has no strokes on this frame", () => {

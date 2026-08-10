@@ -16,6 +16,11 @@ _PLANE_BY_NORMAL_AXIS = ("sagittal", "coronal", "axial")
 # Minimum |component| for the slice normal to count as aligned with one anatomical axis.
 _AXIS_ALIGNMENT_TOLERANCE = 0.8
 
+# Object id reserved for the target across this tool and mr-linac-iowa. The target is
+# never drawn by hand: it is shown as reference here and read from the TargetStructure
+# mask downstream, so nothing in Annotations/ ever carries this id. User objects are 1-7.
+TARGET_OBJECT_ID = 0
+
 
 class PlaneDetectionError(ValueError):
     """Raised when a frame's imaging plane cannot be read from its geometry."""
@@ -237,7 +242,10 @@ def save_annotations(
     output = np.full((h, w), 255, dtype=np.uint8)
 
     for i, b64 in enumerate(masks_b64):
-        if not b64:
+        # Object 0 is the target and is never hand-drawn. mr-linac-iowa reads it from
+        # TwoDImages/TargetStructure/ for the frame it seeds on, so writing a traced
+        # copy here would only give the tracker a worse version of the same contour.
+        if i == TARGET_OBJECT_ID or not b64:
             continue
         png_bytes = base64.b64decode(b64)
         mask_img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")

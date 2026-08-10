@@ -528,10 +528,26 @@ class TestSaveAnnotations:
     def test_mask_pixel_values(self, tmp_input_dir):
         mask_b64 = self._make_mask_b64(8, 8, value=255)
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [mask_b64],
+            str(tmp_input_dir), "00001", ["", mask_b64],
             {}, "00001_Frame.mha",
         )
         out = tmp_input_dir / "Annotations" / "00001_annotation.mha"
         result = sitk.ReadImage(str(out))
         arr = sitk.GetArrayFromImage(result)
-        assert 0 in arr  # object index 0 written where mask was white
+        assert 1 in arr  # object index 1 written where mask was white
+
+    def test_mask_at_the_target_index_is_ignored(self, tmp_input_dir):
+        """Object 0 is the target: mr-linac-iowa reads it from TargetStructure/.
+
+        A traced copy in the annotation would shadow the real contour, so the writer
+        drops it even if a client sends one.
+        """
+        mask_b64 = self._make_mask_b64(8, 8, value=255)
+        imaging.save_annotations(
+            str(tmp_input_dir), "00001", [mask_b64, mask_b64],
+            {}, "00001_Frame.mha",
+        )
+        out = tmp_input_dir / "Annotations" / "00001_annotation.mha"
+        arr = sitk.GetArrayFromImage(sitk.ReadImage(str(out)))
+        assert 0 not in arr
+        assert 1 in arr

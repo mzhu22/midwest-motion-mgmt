@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import LabelPanel from "./LabelPanel";
 
 const defaultProps = {
-  labels: ["target", ...Array(7).fill("")],
+  // Slot 0 is the target and is never drawn, so it carries no label.
+  labels: Array(8).fill("") as string[],
   onLabelsChange: vi.fn(),
-  activeColorIndex: 0,
+  activeColorIndex: 1,
   onActiveColorChange: vi.fn(),
   onSave: vi.fn(),
   saving: false,
@@ -25,11 +26,22 @@ function renderPanel(overrides: Partial<typeof defaultProps> = {}) {
 }
 
 describe("LabelPanel", () => {
-  it("renders 7 editable label inputs and 1 fixed text for object 0", () => {
+  it("renders 7 editable label inputs, one per drawable object", () => {
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
     expect(inputs).toHaveLength(7);
-    expect(screen.getByText("target")).toBeInTheDocument();
+  });
+
+  it("shows the target as a legend entry, not a drawable object", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    const legend = screen.getByText(/target — reference only/i);
+    expect(legend).toBeInTheDocument();
+    // No input for it, and clicking it cannot make it the active object.
+    expect(screen.queryByDisplayValue("target")).not.toBeInTheDocument();
+    await user.click(legend);
+    expect(defaultProps.onActiveColorChange).not.toHaveBeenCalled();
   });
 
   it("clicking a color swatch calls onActiveColorChange", async () => {

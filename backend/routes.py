@@ -99,12 +99,30 @@ def save():
         return jsonify({"error": "No folder loaded"}), 400
 
     labels = data.get("labels", {})
+    frames_data = data.get("frames", [])
+
+    # Refuse a save with nothing drawn, and refuse it *before* clearing: a save that
+    # would write no objects has nothing to offer over the target contour the tracker
+    # already reads from the image, so letting it through would only destroy a good
+    # earlier save. Object 0 is the target and is dropped on write, so it does not count.
+    has_objects = any(
+        mask
+        for frame_data in frames_data
+        for mask in frame_data.get("masks", [])[imaging.TARGET_OBJECT_ID + 1 :]
+    )
+    if not has_objects:
+        return jsonify(
+            {
+                "error": "No object contours were drawn. The target contour is saved "
+                "from the original image automatically; draw at least one other object."
+            }
+        ), 400
 
     # Clear once up front, not per frame: a save writes a full sagittal/coronal pair
     # and stale masks from an earlier run would mis-seed tracking downstream.
     removed = imaging.clear_annotations(folder)
 
-    for frame_data in data.get("frames", []):
+    for frame_data in frames_data:
         idx = frame_data["frame_index"]
         masks = frame_data.get("masks", [])
         frame = _state["frames"].get(idx)

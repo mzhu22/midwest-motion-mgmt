@@ -1,4 +1,4 @@
-import { COLORS } from "../types";
+import { COLORS, TARGET_CONTOUR_COLOR, TARGET_OBJECT_INDEX } from "../types";
 
 interface Props {
   labels: string[];
@@ -25,41 +25,66 @@ export default function LabelPanel({
     <div style={{ padding: 12, minWidth: 240, flex: "0 0 auto" }}>
       <h3 style={{ margin: "0 0 12px" }}>Annotations</h3>
 
-      {COLORS.map((color, i) => (
+      {/* The target is not one of the drawable objects — it comes from the image's own
+          TargetStructure mask. Shown here only so the pink overlay has a key. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 10,
+          padding: "4px 6px",
+          width: "100%",
+          boxSizing: "border-box",
+        }}
+      >
         <div
-          key={i}
-          onClick={() => onActiveColorChange(i)}
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 6,
-            padding: "4px 6px",
+            width: 20,
+            height: 20,
             borderRadius: 4,
-            cursor: "pointer",
-            width: "100%",
-            boxSizing: "border-box",
-            background: activeColorIndex === i ? "#e8e8e8" : "transparent",
+            background: TARGET_CONTOUR_COLOR,
+            border: "2px solid transparent",
+            flexShrink: 0,
           }}
-        >
+        />
+        <span style={{ flex: 1, fontSize: 13, color: "#6b7280" }}>
+          target
+        </span>
+      </div>
+
+      {COLORS.map((color, i) => {
+        if (i === TARGET_OBJECT_INDEX) return null;
+        return (
           <div
+            key={i}
+            onClick={() => onActiveColorChange(i)}
             style={{
-              width: 20,
-              height: 20,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 6,
+              padding: "4px 6px",
               borderRadius: 4,
-              background: color,
-              border:
-                activeColorIndex === i
-                  ? "2px solid #333"
-                  : "2px solid transparent",
-              flexShrink: 0,
+              cursor: "pointer",
+              width: "100%",
+              boxSizing: "border-box",
+              background: activeColorIndex === i ? "#e8e8e8" : "transparent",
             }}
-          />
-          {i === 0 ? (
-            <span style={{ flex: 1, padding: "3px 6px", fontSize: 13, color: "#374151" }}>
-              {labels[0]}
-            </span>
-          ) : (
+          >
+            <div
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                background: color,
+                border:
+                  activeColorIndex === i
+                    ? "2px solid #333"
+                    : "2px solid transparent",
+                flexShrink: 0,
+              }}
+            />
             <input
               type="text"
               value={labels[i] ?? ""}
@@ -72,9 +97,9 @@ export default function LabelPanel({
               placeholder={`Object ${i}`}
               style={{ flex: 1, padding: "3px 6px", fontSize: 13 }}
             />
-          )}
-        </div>
-      ))}
+          </div>
+        );
+      })}
 
       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         <button
