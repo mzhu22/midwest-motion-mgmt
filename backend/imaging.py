@@ -74,11 +74,114 @@ def _target_plane_matches(target_path: str, plane: str) -> bool:
         return False
 
 
-def find_frames_with_targets(input_dir: str) -> list[dict]:
-    """Find the first adjacent sagittal -> coronal frame pair, both with good targets.
+def list_series(input_dir: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """List every image/target file present, sorted numerically by frame index.
 
-    Planes come from each image's direction cosines rather than its index, so a
-    series whose numbering has holes still yields the right plane per frame.
+    Only lists filenames (a directory listing), reading no MHA headers — cheap even
+    on a series with thousands of frames, so it's safe to call just to learn the
+    series' length before deciding what to actually scan.
+    """
+    images_dir = Path(input_dir) / "TwoDImages"
+    target_dir = images_dir / "TargetStructure"
+
+    image_map: dict[str, str] = {
+        f.name[:5]: f.name for f in images_dir.iterdir() if f.is_file() and f.suffix == ".mha"
+    }
+    target_map: dict[str, str] = {
+        f.name[:5]: f.name for f in target_dir.iterdir() if f.is_file() and f.suffix == ".mha"
+    }
+    return sorted(image_map, key=int), image_map, target_map
+
+
+def first_pair_position(
+    input_dir: str,
+    ordered: list[str],
+    image_map: dict[str, str],
+    target_map: dict[str, str],
+) -> int | None:
+    """Position of the first verified adjacent sagittal -> coronal pair in the
+    series, scanning forward from the start and stopping at the first match.
+
+    Cheap in practice, the same way find_frames_with_targets used to be: it reads
+    only as many headers as it takes to find one pair, not the whole series. This is
+    what a default-milestone pool should anchor its start on — merely the first
+    frame with a target file can be geometry-mismatched (the reference phantom's
+    frame 00285 carries the wrong stack's geometry; its first real pair is
+    00287/00288), so anchoring there instead of the true first pair would waste a
+    milestone on a position no better than one with no target at all. Returns None
+    if no pair exists anywhere in the series.
+    """
+    images_dir = Path(input_dir) / "TwoDImages"
+    target_dir = images_dir / "TargetStructure"
+    common = image_map.keys() & target_map.keys()
+
+    def candidate(prefix: str, want: str) -> bool:
+        if prefix not in common:
+            return False
+        plane = _read_plane(str(images_dir / image_map[prefix]))
+        if plane != want:
+            return False
+        return _target_plane_matches(str(target_dir / target_map[prefix]), plane)
+
+    for i in range(len(ordered) - 1):
+        if candidate(ordered[i], "sagittal") and candidate(ordered[i + 1], "coronal"):
+            return i
+
+    # No pair exists. With fewer than two frames the loop above never ran at all, so
+    # a bad lone frame's plane was never read; read it now so it surfaces as its own
+    # specific error rather than silently returning None.
+    if len(ordered) < 2:
+        for prefix in sorted(common, key=int):
+            _read_plane(str(images_dir / image_map[prefix]))
+    return None
+
+
+def default_positions(positions: list[int], count: int) -> list[int]:
+    """`count` evenly spaced entries from `positions` (sorted ascending), including
+    both endpoints.
+
+    `positions` is the pool to space milestones across — usually every position in
+    the series, but callers with a cheap way to narrow it (e.g. to positions whose
+    frame has a target file at all) should, so a default milestone doesn't land
+    somewhere with no chance of finding anything nearby. A series can have a long
+    dead stretch with no targets — the reference phantom has none for its first 284
+    frames — and evenly spacing over the *raw* frame count wastes a pick there.
+
+    `count` is clamped to [1, len(positions)]. For 1 < count < n, round(i * (n-1) /
+    (count-1)) forms a strictly increasing sequence (the step (n-1)/(count-1) is
+    always > 1 in that range, and rounding a sequence with step > 1 can never
+    collapse two distinct terms to the same integer), so this never needs to resolve
+    a collision between two milestones landing on the same entry.
+    """
+    n = len(positions)
+    count = max(1, min(count, n))
+    if count == 1:
+        return [positions[0]]
+    if count == n:
+        return list(positions)
+    return [positions[round(i * (n - 1) / (count - 1))] for i in range(count)]
+
+
+def position_near(ordered: list[str], frame_index: str) -> int:
+    """The position in `ordered` closest to `frame_index`, which need not itself be
+    present in the series (a typed value can land on a gap, or off either end)."""
+    if frame_index in ordered:
+        return ordered.index(frame_index)
+    target = int(frame_index)
+    return min(range(len(ordered)), key=lambda i: abs(int(ordered[i]) - target))
+
+
+def find_pair_near(
+    input_dir: str,
+    ordered: list[str],
+    image_map: dict[str, str],
+    target_map: dict[str, str],
+    position: int,
+    window: int = 5,
+) -> list[dict]:
+    """Find the adjacent sagittal -> coronal pair (matching target geometry)
+    closest to `ordered[position]`, reading MHA headers for at most
+    `2 * window + 1` frames around it rather than scanning the whole series.
 
     Three conditions, each load-bearing:
 
@@ -92,23 +195,11 @@ def find_frames_with_targets(input_dir: str) -> list[dict]:
       first image of that plane at or after min(annotation index) and seeds the
       tracker from frame 0 of that stack, so an intervening coronal image would
       leave the coronal tracker seeded with a mask drawn on a later frame. Adjacency
-      is checked against every image on disk, not just those carrying targets,
-      because that is what the downstream stack walk iterates.
+      is checked against every image in the window, not just those carrying
+      targets, because that is what the downstream stack walk iterates.
     """
     images_dir = Path(input_dir) / "TwoDImages"
     target_dir = images_dir / "TargetStructure"
-
-    image_map: dict[str, str] = {}
-    for f in images_dir.iterdir():
-        if f.is_file() and f.suffix == ".mha":
-            image_map[f.name[:5]] = f.name
-
-    target_map: dict[str, str] = {}
-    for f in target_dir.iterdir():
-        if f.is_file() and f.suffix == ".mha":
-            target_map[f.name[:5]] = f.name
-
-    ordered = sorted(image_map, key=int)
     common = image_map.keys() & target_map.keys()
 
     mismatched: set[str] = set()
@@ -131,19 +222,36 @@ def find_frames_with_targets(input_dir: str) -> list[dict]:
             "target_file": target_map[prefix],
         }
 
-    for first, second in zip(ordered, ordered[1:]):
-        sagittal = candidate(first, "sagittal")
-        if sagittal is None:
-            continue
-        coronal = candidate(second, "coronal")
-        if coronal is not None:
-            return [sagittal, coronal]
+    n = len(ordered)
+    lo = max(0, position - window)
+    hi = min(n, position + window + 1)
 
-    # No pair found. The scan is lazy and stops at the first frame that disqualifies a
-    # pair, so it may never have read some images' geometry — including, when there is
-    # only one frame, any image at all. Read the rest now so an unreadable image plane
-    # surfaces as its own specific error instead of the generic "no pair" one below.
-    for prefix in sorted(common, key=int):
+    best: list[dict] | None = None
+    best_dist: int | None = None
+    i = lo
+    while i < hi - 1:
+        sagittal = candidate(ordered[i], "sagittal")
+        if sagittal is None:
+            i += 1
+            continue
+        coronal = candidate(ordered[i + 1], "coronal")
+        if coronal is None:
+            i += 1
+            continue
+        dist = abs(i - position)
+        if best is None or dist < best_dist:
+            best, best_dist = [sagittal, coronal], dist
+        i += 2
+
+    if best is not None:
+        return best
+
+    # No pair in the window. The scan above is lazy and stops checking a prefix as
+    # soon as it disqualifies a pair, so it may not have read every frame's geometry
+    # in the window. Read the rest now, so an unreadable image plane surfaces as its
+    # own specific error instead of the generic "no pair" one below.
+    windowed = set(ordered[lo:hi])
+    for prefix in sorted(windowed & common, key=int):
         _read_plane(str(images_dir / image_map[prefix]))
 
     skipped = (
@@ -152,14 +260,13 @@ def find_frames_with_targets(input_dir: str) -> list[dict]:
         if mismatched
         else ""
     )
+    near = ordered[position] if ordered else "the requested position"
     raise PlaneDetectionError(
         f"Need two adjacent frames — a sagittal one immediately followed by a coronal "
         f"one — where both have a target structure whose geometry matches its image. "
-        f"No such pair was found in {len(ordered)} frames ({len(common)} with targets). "
-        f"The pair must be adjacent so downstream tracking seeds each plane on its own "
-        f"first frame.{skipped}"
+        f"No such pair was found within {window} frames of {near} "
+        f"({hi - lo} frames scanned, {len(windowed & common)} with targets).{skipped}"
     )
-
 
 def read_mha_as_png(filepath: str) -> bytes:
     img = sitk.ReadImage(filepath)

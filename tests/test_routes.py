@@ -65,9 +65,12 @@ class TestLoadFolder:
         resp = client.post("/api/load-folder", json={"folder_path": str(tmp_input_dir)})
         assert resp.status_code == 200
         data = resp.get_json()
-        assert "frames" in data
-        assert len(data["frames"]) == 2
-        for f in data["frames"]:
+        assert "selected" in data
+        assert data["default_count"] == 1
+        assert len(data["selected"]) == 1
+        pair = data["selected"][0]
+        assert len(pair) == 2
+        for f in pair:
             assert "frame_index" in f
             assert "plane" in f
             assert "width" in f
@@ -114,6 +117,57 @@ class TestLoadFolder:
         resp = client.post("/api/load-folder", json={"folder_path": str(tmp_path)})
         assert resp.status_code == 400
         assert "coronal" in resp.get_json()["error"]
+
+
+# --- POST /api/select-milestones ---
+
+class TestSelectMilestones:
+    def test_no_folder_loaded_returns_400(self, client):
+        resp = client.post("/api/select-milestones", json={"count": 2})
+        assert resp.status_code == 400
+
+    def test_count_recomputes_selection(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        resp = client.post("/api/select-milestones", json={"count": 2})
+        assert resp.status_code == 200
+        selected = resp.get_json()["selected"]
+        assert len(selected) == 2
+        # Evenly spaced over 3 candidates with count=2 keeps the first and last.
+        assert selected[0][0]["frame_index"] == "00001"
+        assert selected[1][0]["frame_index"] == "00005"
+
+    def test_count_clamped_to_available_pairs(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        resp = client.post("/api/select-milestones", json={"count": 99})
+        assert resp.status_code == 200
+        assert len(resp.get_json()["selected"]) == 3
+
+    def test_explicit_frame_indices_selects_those_pairs(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        resp = client.post(
+            "/api/select-milestones", json={"frame_indices": ["00003", "00005"]}
+        )
+        assert resp.status_code == 200
+        selected = resp.get_json()["selected"]
+        assert [pair[0]["frame_index"] for pair in selected] == ["00003", "00005"]
+
+    def test_explicit_frame_index_snaps_to_nearest_candidate(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        # "00004" is a coronal frame, not a candidate's sagittal start; nearest is "00003".
+        resp = client.post("/api/select-milestones", json={"frame_indices": ["00004"]})
+        assert resp.status_code == 200
+        selected = resp.get_json()["selected"]
+        assert selected[0][0]["frame_index"] == "00003"
+
+    def test_selection_updates_frame_lookup_for_image_route(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        client.post("/api/select-milestones", json={"frame_indices": ["00005"]})
+        resp = client.get("/api/frame/00005/image")
+        assert resp.status_code == 200
+        # A frame that was in the original default selection but got dropped by the
+        # narrower explicit selection is no longer considered loaded.
+        resp = client.get("/api/frame/00001/image")
+        assert resp.status_code == 404
 
 
 # --- GET /api/frame/<idx>/image ---

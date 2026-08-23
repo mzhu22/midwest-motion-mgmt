@@ -87,6 +87,18 @@ def tmp_input_dir(tmp_path):
 
 
 @pytest.fixture()
+def tmp_multi_pair_dir(tmp_path):
+    """A folder with six frames alternating plane, forming three adjacent sag/cor pairs."""
+    return _make_frame_dir(
+        tmp_path,
+        {
+            f"{i:05d}": SAGITTAL_DIRECTION if i % 2 == 1 else CORONAL_DIRECTION
+            for i in range(1, 7)
+        },
+    )
+
+
+@pytest.fixture()
 def client(tmp_path):
     app = create_app()
     app.config["TESTING"] = True

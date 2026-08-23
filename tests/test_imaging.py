@@ -65,74 +65,37 @@ class TestReadPlane:
         assert "garbage.mha" in str(exc.value)
 
 
-# --- find_frames_with_targets ---
+# --- list_series ---
 
-class TestFindFramesWithTargets:
-    def test_returns_matching_frames(self, tmp_input_dir):
-        frames = imaging.find_frames_with_targets(str(tmp_input_dir))
-        assert len(frames) == 2
-        indices = [f["frame_index"] for f in frames]
-        assert indices == ["00001", "00002"]
-
-    def test_plane_assignment(self, tmp_input_dir):
-        frames = imaging.find_frames_with_targets(str(tmp_input_dir))
-        assert frames[0]["plane"] == "sagittal"
-        assert frames[1]["plane"] == "coronal"
-
-    def test_geometry_wins_over_index_parity(self, tmp_path):
-        """An even index carrying sagittal cosines must be reported as sagittal."""
+class TestListSeries:
+    def test_returns_sorted_frame_indices(self, tmp_path):
         _make_frame_dir(
             tmp_path,
-            {"00002": SAGITTAL_DIRECTION, "00003": CORONAL_DIRECTION},
+            {"00010": SAGITTAL_DIRECTION, "00003": CORONAL_DIRECTION, "00001": SAGITTAL_DIRECTION},
         )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        by_index = {f["frame_index"]: f["plane"] for f in frames}
-        assert by_index == {"00002": "sagittal", "00003": "coronal"}
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        assert ordered == ["00001", "00003", "00010"]
+        assert set(image_map) == {"00001", "00003", "00010"}
+        assert set(target_map) == {"00001", "00003", "00010"}
 
-    def test_coronal_before_sagittal_only_is_rejected(self, tmp_path):
-        """The coronal frame must follow the sagittal one, so this pair is unusable.
+    def test_does_not_read_any_mha_headers(self, tmp_path, monkeypatch):
+        _make_frame_dir(tmp_path, {"00001": SAGITTAL_DIRECTION, "00002": CORONAL_DIRECTION})
+        calls = []
+        monkeypatch.setattr(imaging, "_read_plane", lambda path: calls.append(path) or "sagittal")
+        imaging.list_series(str(tmp_path))
+        assert calls == []
 
-        Returning them plane-ordered would put frame 00010 to the right of 00011.
-        """
-        _make_frame_dir(
-            tmp_path,
-            {"00010": CORONAL_DIRECTION, "00011": SAGITTAL_DIRECTION},
-        )
-        with pytest.raises(imaging.PlaneDetectionError, match="No such pair was found"):
-            imaging.find_frames_with_targets(str(tmp_path))
 
-    def test_pair_is_sagittal_then_coronal_in_ascending_index_order(self, tmp_path):
-        _make_frame_dir(
-            tmp_path,
-            {
-                "00010": CORONAL_DIRECTION,
-                "00011": SAGITTAL_DIRECTION,
-                "00012": CORONAL_DIRECTION,
-            },
-        )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["plane"] for f in frames] == ["sagittal", "coronal"]
-        assert [f["frame_index"] for f in frames] == ["00011", "00012"]
+# --- first_pair_position ---
 
-    def test_leading_coronal_is_passed_over(self, tmp_path):
-        """A series starting on coronal still yields a sagittal-first pair."""
-        _make_frame_dir(
-            tmp_path,
-            {
-                "00286": CORONAL_DIRECTION,
-                "00287": SAGITTAL_DIRECTION,
-                "00288": CORONAL_DIRECTION,
-            },
-        )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00287", "00288"]
+class TestFirstPairPosition:
+    def test_finds_the_first_pair(self, tmp_input_dir):
+        ordered, image_map, target_map = imaging.list_series(str(tmp_input_dir))
+        assert imaging.first_pair_position(str(tmp_input_dir), ordered, image_map, target_map) == 0
 
-    def test_frame_whose_target_carries_wrong_geometry_is_skipped(self, tmp_path):
-        """Reproduces frame 00285 in the reference dataset.
-
-        Its mask carries 00286's geometry, so a coronal contour would be drawn over a
-        sagittal image. The next clean sagittal/coronal pair must be used instead.
-        """
+    def test_skips_a_geometry_mismatched_frame(self, tmp_path):
+        """Reproduces frame 00285 in the reference dataset: its target carries the
+        wrong stack's geometry, so the true first pair is 00287/00288, not 00285."""
         _make_frame_dir(
             tmp_path,
             {
@@ -143,11 +106,148 @@ class TestFindFramesWithTargets:
             },
             target_planes={"00285": CORONAL_DIRECTION},
         )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00287", "00288"]
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        position = imaging.first_pair_position(str(tmp_path), ordered, image_map, target_map)
+        assert ordered[position] == "00287"
 
-    def test_target_without_slice_normal_is_skipped_not_raised(self, tmp_path):
-        """A 2D mask cannot express a plane; skip that frame rather than failing."""
+    def test_returns_none_when_no_pair_exists(self, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {"00001": SAGITTAL_DIRECTION, "00003": SAGITTAL_DIRECTION},
+        )
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        assert imaging.first_pair_position(str(tmp_path), ordered, image_map, target_map) is None
+
+    def test_unreadable_single_frame_still_raises(self, tmp_path):
+        """With fewer than two frames the forward scan never runs at all, so the
+        lone frame's plane must still be read some other way for a bad image to
+        surface as its own error instead of silently returning None."""
+        images_dir = tmp_path / "TwoDImages"
+        target_dir = images_dir / "TargetStructure"
+        images_dir.mkdir()
+        target_dir.mkdir()
+        arr = np.zeros((8, 8), dtype=np.uint8)
+        _write_mha_2d(images_dir / "00001_Frame.mha", arr)
+        _write_mha_2d(target_dir / "00001_Frame.mha", arr)
+
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        with pytest.raises(imaging.PlaneDetectionError, match="imaging plane"):
+            imaging.first_pair_position(str(tmp_path), ordered, image_map, target_map)
+
+
+# --- default_positions ---
+
+class TestDefaultPositions:
+    def test_count_one_returns_first_position(self):
+        assert imaging.default_positions(list(range(5)), 1) == [0]
+
+    def test_count_equal_to_n_returns_all_positions(self):
+        assert imaging.default_positions(list(range(4)), 4) == [0, 1, 2, 3]
+
+    def test_count_greater_than_n_is_clamped(self):
+        assert imaging.default_positions(list(range(3)), 99) == [0, 1, 2]
+
+    def test_includes_first_and_last(self):
+        positions = imaging.default_positions(list(range(20)), 5)
+        assert positions[0] == 0
+        assert positions[-1] == 19
+
+    def test_distinct_positions_across_many_count_to_n_ratios(self):
+        for n in range(2, 40):
+            for count in range(2, n + 1):
+                positions = imaging.default_positions(list(range(n)), count)
+                assert len(positions) == count
+                assert len(set(positions)) == count
+
+    def test_spaces_over_an_arbitrary_subset_not_just_a_dense_range(self):
+        """The pool doesn't have to be range(n) — a caller can restrict it (e.g. to
+        positions with a target file) so the spread avoids a region with none."""
+        eligible = [62, 100, 200, 400, 800, 1328]
+        positions = imaging.default_positions(eligible, 3)
+        assert positions[0] == 62
+        assert positions[-1] == 1328
+        assert all(p in eligible for p in positions)
+
+
+# --- position_near ---
+
+class TestPositionNear:
+    def test_exact_match(self):
+        assert imaging.position_near(["00001", "00005", "00009"], "00005") == 1
+
+    def test_value_in_a_gap_snaps_to_nearest(self):
+        assert imaging.position_near(["00001", "00005", "00009"], "00008") == 2
+
+    def test_value_past_the_end_snaps_to_last(self):
+        assert imaging.position_near(["00001", "00005", "00009"], "00050") == 2
+
+    def test_value_before_the_start_snaps_to_first(self):
+        assert imaging.position_near(["00001", "00005", "00009"], "00000") == 0
+
+
+# --- find_pair_near ---
+
+class TestFindPairNear:
+    def test_finds_pair_at_its_own_position(self, tmp_input_dir):
+        ordered, image_map, target_map = imaging.list_series(str(tmp_input_dir))
+        pair = imaging.find_pair_near(str(tmp_input_dir), ordered, image_map, target_map, 0)
+        assert [f["frame_index"] for f in pair] == ["00001", "00002"]
+
+    def test_frame_has_required_keys(self, tmp_input_dir):
+        ordered, image_map, target_map = imaging.list_series(str(tmp_input_dir))
+        pair = imaging.find_pair_near(str(tmp_input_dir), ordered, image_map, target_map, 0)
+        for f in pair:
+            assert "frame_index" in f
+            assert "plane" in f
+            assert "image_file" in f
+            assert "target_file" in f
+
+    def test_only_reads_headers_within_the_window(self, tmp_path, monkeypatch):
+        """A pair far outside the window must not be found, and frames outside the
+        window must never have their headers read — this is the actual performance
+        contract: loading a milestone must not touch the rest of the series."""
+        planes = {
+            f"{i:05d}": SAGITTAL_DIRECTION if i % 2 == 1 else CORONAL_DIRECTION
+            for i in range(1, 41)
+        }
+        _make_frame_dir(tmp_path, planes)
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+
+        read_paths = []
+        original_read_plane = imaging._read_plane
+
+        def tracking_read_plane(path):
+            read_paths.append(Path(path).name)
+            return original_read_plane(path)
+
+        monkeypatch.setattr(imaging, "_read_plane", tracking_read_plane)
+
+        position = 20  # ordered[20] == "00021"
+        pair = imaging.find_pair_near(
+            str(tmp_path), ordered, image_map, target_map, position, window=5
+        )
+        assert [f["frame_index"] for f in pair] == ["00021", "00022"]
+
+        touched = {name[:5] for name in read_paths}
+        assert "00001" not in touched
+        assert "00040" not in touched
+        assert len(touched) <= 2 * 5 + 1
+
+    def test_picks_the_candidate_closest_to_position(self, tmp_path):
+        planes = {
+            f"{i:05d}": SAGITTAL_DIRECTION if i % 2 == 1 else CORONAL_DIRECTION
+            for i in range(1, 12)
+        }
+        _make_frame_dir(tmp_path, planes)
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+
+        # Position 4 (frame 00005) has candidate pairs at (00001,00002), (00003,00004),
+        # (00005,00006), (00007,00008), (00009,00010) within the window; the closest
+        # to position 4 is (00005, 00006).
+        pair = imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 4, window=5)
+        assert [f["frame_index"] for f in pair] == ["00005", "00006"]
+
+    def test_geometry_mismatch_is_skipped_within_window(self, tmp_path):
         _make_frame_dir(
             tmp_path,
             {
@@ -156,13 +256,22 @@ class TestFindFramesWithTargets:
                 "00003": SAGITTAL_DIRECTION,
                 "00004": CORONAL_DIRECTION,
             },
+            target_planes={"00001": CORONAL_DIRECTION},
         )
-        target = tmp_path / "TwoDImages" / "TargetStructure" / "00001_Frame.mha"
-        target.unlink()
-        _write_mha_2d(target, np.full((8, 8), 255, dtype=np.uint8))
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        pair = imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
+        assert [f["frame_index"] for f in pair] == ["00003", "00004"]
 
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00003", "00004"]
+    def test_no_pair_in_window_raises_with_window_size_in_message(self, tmp_path):
+        _make_frame_dir(
+            tmp_path,
+            {"00010": CORONAL_DIRECTION, "00011": SAGITTAL_DIRECTION},
+        )
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        with pytest.raises(
+            imaging.PlaneDetectionError, match="No such pair was found within 5 frames"
+        ):
+            imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
 
     def test_unreadable_image_plane_still_raises(self, tmp_path):
         """The skip path must not swallow an image-side plane failure."""
@@ -170,16 +279,11 @@ class TestFindFramesWithTargets:
             tmp_path,
             {"00001": OBLIQUE_DIRECTION, "00002": CORONAL_DIRECTION},
         )
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
         with pytest.raises(imaging.PlaneDetectionError, match="oblique"):
-            imaging.find_frames_with_targets(str(tmp_path))
+            imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
 
     def test_error_names_the_frames_skipped_for_bad_geometry(self, tmp_path):
-        """The message reports the frames it actually rejected, so a bad dataset is
-        diagnosable rather than just 'no pair found'.
-
-        Only frames the scan reached are counted: 00002 is never evaluated because
-        00001 disqualifies the pair before its partner is checked.
-        """
         _make_frame_dir(
             tmp_path,
             {"00001": SAGITTAL_DIRECTION, "00002": CORONAL_DIRECTION},
@@ -188,32 +292,15 @@ class TestFindFramesWithTargets:
                 "00002": SAGITTAL_DIRECTION,
             },
         )
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
         with pytest.raises(imaging.PlaneDetectionError) as exc:
-            imaging.find_frames_with_targets(str(tmp_path))
+            imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
         assert "1 frame(s) were skipped" in str(exc.value)
         assert "00001" in str(exc.value)
 
-    def test_series_need_not_start_at_index_one(self, tmp_path):
-        """Index numbering with holes must not break plane assignment.
-
-        The reference series resumes at 00285 after a gap; parity-based assignment
-        would be a coin flip there, geometry is not.
-        """
-        _make_frame_dir(
-            tmp_path,
-            {"00287": SAGITTAL_DIRECTION, "00288": CORONAL_DIRECTION},
-        )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        by_index = {f["frame_index"]: f["plane"] for f in frames}
-        assert by_index == {"00287": "sagittal", "00288": "coronal"}
-
     def test_non_adjacent_pair_is_rejected(self, tmp_path):
-        """An intervening coronal image would be the real start of the coronal stack.
-
-        Downstream takes each plane's start from the images on disk, not from which
-        frame we annotated, so pairing 00287 with 00290 across a coronal 00288 would
-        seed the coronal tracker at 00288 with a mask drawn on 00290.
-        """
+        """An intervening coronal image would be the real start of the coronal stack,
+        so pairing across a bad frame in between must be rejected."""
         _make_frame_dir(
             tmp_path,
             {
@@ -224,94 +311,20 @@ class TestFindFramesWithTargets:
             },
             target_planes={"00288": SAGITTAL_DIRECTION},
         )
-        # 00288's mask is bad, so 00287 has no usable partner; the next clean adjacent
-        # pair is 00289/00290 rather than 00287/00290.
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00289", "00290"]
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        pair = imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
+        assert [f["frame_index"] for f in pair] == ["00289", "00290"]
 
-    def test_adjacency_counts_images_without_targets(self, tmp_path):
-        """A target-less image between the pair still breaks adjacency.
-
-        Downstream iterates every image in TwoDImages, so a frame we cannot annotate
-        still anchors the stack start.
-        """
+    def test_geometry_wins_over_index_parity(self, tmp_path):
+        """An even index carrying sagittal cosines must be reported as sagittal."""
         _make_frame_dir(
             tmp_path,
-            {
-                "00287": SAGITTAL_DIRECTION,
-                "00288": CORONAL_DIRECTION,
-                "00289": SAGITTAL_DIRECTION,
-                "00290": CORONAL_DIRECTION,
-            },
+            {"00002": SAGITTAL_DIRECTION, "00003": CORONAL_DIRECTION},
         )
-        # Remove 00288's target: it stays on disk as an image, so 00287 is stranded.
-        (tmp_path / "TwoDImages" / "TargetStructure" / "00288_Frame.mha").unlink()
-
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00289", "00290"]
-
-    def test_frame_has_required_keys(self, tmp_input_dir):
-        frames = imaging.find_frames_with_targets(str(tmp_input_dir))
-        for f in frames:
-            assert "frame_index" in f
-            assert "plane" in f
-            assert "image_file" in f
-            assert "target_file" in f
-
-    def test_returns_max_two_frames(self, tmp_input_dir):
-        images_dir = tmp_input_dir / "TwoDImages"
-        target_dir = images_dir / "TargetStructure"
-        arr = np.zeros((8, 8), dtype=np.uint8)
-        for prefix in ("00003", "00004", "00005"):
-            _write_mha_3d(images_dir / f"{prefix}_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
-            _write_mha_3d(target_dir / f"{prefix}_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
-
-        frames = imaging.find_frames_with_targets(str(tmp_input_dir))
-        assert len(frames) == 2
-
-    def test_first_frame_of_each_plane_is_kept(self, tmp_path):
-        _make_frame_dir(
-            tmp_path,
-            {
-                "00001": SAGITTAL_DIRECTION,
-                "00002": CORONAL_DIRECTION,
-                "00003": SAGITTAL_DIRECTION,
-                "00004": CORONAL_DIRECTION,
-            },
-        )
-        frames = imaging.find_frames_with_targets(str(tmp_path))
-        assert [f["frame_index"] for f in frames] == ["00001", "00002"]
-
-    def test_single_plane_series_rejected(self, tmp_path):
-        _make_frame_dir(
-            tmp_path,
-            {"00001": SAGITTAL_DIRECTION, "00003": SAGITTAL_DIRECTION},
-        )
-        with pytest.raises(imaging.PlaneDetectionError) as exc:
-            imaging.find_frames_with_targets(str(tmp_path))
-        assert "coronal" in str(exc.value)
-        assert "sagittal" in str(exc.value)
-
-    def test_empty_directory(self, tmp_path):
-        images_dir = tmp_path / "TwoDImages"
-        target_dir = images_dir / "TargetStructure"
-        images_dir.mkdir()
-        target_dir.mkdir()
-
-        with pytest.raises(imaging.PlaneDetectionError):
-            imaging.find_frames_with_targets(str(tmp_path))
-
-    def test_no_overlap(self, tmp_path):
-        images_dir = tmp_path / "TwoDImages"
-        target_dir = images_dir / "TargetStructure"
-        images_dir.mkdir()
-        target_dir.mkdir()
-        arr = np.zeros((8, 8), dtype=np.uint8)
-        _write_mha_3d(images_dir / "00001_Frame.mha", arr, direction=SAGITTAL_DIRECTION)
-        _write_mha_3d(target_dir / "00002_Frame.mha", arr, direction=CORONAL_DIRECTION)
-
-        with pytest.raises(imaging.PlaneDetectionError):
-            imaging.find_frames_with_targets(str(tmp_path))
+        ordered, image_map, target_map = imaging.list_series(str(tmp_path))
+        pair = imaging.find_pair_near(str(tmp_path), ordered, image_map, target_map, 0, window=5)
+        by_index = {f["frame_index"]: f["plane"] for f in pair}
+        assert by_index == {"00002": "sagittal", "00003": "coronal"}
 
 
 # --- read_mha_as_png ---

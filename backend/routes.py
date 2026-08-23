@@ -40,6 +40,96 @@ def browse_folder():
     return jsonify({"path": path})
 
 
+DEFAULT_MILESTONE_COUNT = 5
+
+# How many frames on either side of a milestone's position get their MHA headers
+# read while searching for a valid sagittal/coronal pair. Keeping this small is what
+# makes loading (and re-loading, when a milestone is moved) cheap on a long series —
+# see _select_pairs and the /select-milestones frame_indices path below.
+MILESTONE_WINDOW = 5
+
+
+def _eligible_positions(
+    folder_path: str, ordered: list[str], image_map: dict[str, str], target_map: dict[str, str]
+) -> list[int]:
+    """Positions to space default milestones across: every frame with a target
+    file, from the first *verified* valid pair onward.
+
+    Anchoring on the first frame that merely has a target file isn't good enough —
+    on the reference phantom that's frame 00285, whose target carries the wrong
+    stack's geometry, not 00287 where the first real pair actually starts. Finding
+    the true start (imaging.first_pair_position) is still cheap in practice: an
+    early-exiting forward scan, not the whole-series scan this endpoint exists to
+    avoid. Everything after it that has a target file is fair game — find_pair_near
+    already tolerates the occasional bad frame within its window.
+    """
+    start = imaging.first_pair_position(folder_path, ordered, image_map, target_map)
+    if start is None:
+        return []
+    return [
+        i for i, frame_index in enumerate(ordered) if i >= start and frame_index in target_map
+    ]
+
+
+def _add_dimensions(folder_path: str, pair: list[dict]) -> None:
+    images_dir = Path(folder_path) / "TwoDImages"
+    for frame in pair:
+        if "width" in frame:
+            continue
+        img_path = str(images_dir / frame["image_file"])
+        w, h = imaging.get_image_dimensions(img_path)
+        frame["width"] = w
+        frame["height"] = h
+
+
+def _select_pairs(
+    folder_path: str, ordered, image_map, target_map, positions, strict: bool = True
+) -> list[list[dict]]:
+    """Resolve each position to its nearest valid pair, windowed, deduplicating by
+    sagittal frame_index.
+
+    Without an eager whole-series scan, the true number of distinct candidate pairs
+    isn't known up front, so two evenly-spaced positions can resolve to the very same
+    nearby pair (most likely when the requested count approaches — or exceeds — how
+    many pairs actually exist). Deduplicating here is what makes "clamp to however
+    many distinct milestones are actually available" work without ever computing
+    that count in advance.
+
+    A series can also have long stretches with no target at all (the reference
+    phantom has none for its first 284 frames), so an evenly-spaced default position
+    can legitimately land somewhere no pair exists within the window. With
+    strict=False (the auto/count-based paths), that position is just skipped rather
+    than failing the whole request, as long as at least one other position succeeds
+    — the other evenly-spaced positions still deliver useful milestones. With
+    strict=True (a milestone the user explicitly asked to move to a specific frame),
+    the failure is real feedback and must propagate immediately.
+
+    If every position fails, skipping all of them would just trade a specific,
+    actionable error (an oblique image, mismatched target geometry, ...) for a vague
+    "nothing found anywhere" one — so the first error hit is re-raised instead.
+    """
+    seen: set[str] = set()
+    selected: list[list[dict]] = []
+    first_error: imaging.PlaneDetectionError | None = None
+    for pos in positions:
+        try:
+            pair = imaging.find_pair_near(
+                folder_path, ordered, image_map, target_map, pos, MILESTONE_WINDOW
+            )
+        except imaging.PlaneDetectionError as exc:
+            if strict:
+                raise
+            first_error = first_error or exc
+            continue
+        key = pair[0]["frame_index"]
+        if key not in seen:
+            seen.add(key)
+            selected.append(pair)
+    if not selected and first_error is not None:
+        raise first_error
+    return selected
+
+
 @api.route("/load-folder", methods=["POST"])
 def load_folder():
     data = request.get_json()
@@ -50,21 +140,91 @@ def load_folder():
     if not images_dir.is_dir() or not target_dir.is_dir():
         return jsonify({"error": "Invalid folder: missing TwoDImages or TargetStructure"}), 400
 
+    # Cheap: a directory listing only, no MHA headers read yet.
+    ordered, image_map, target_map = imaging.list_series(folder_path)
+    if not ordered:
+        return jsonify({
+            "error": "Need at least two frames — a sagittal one and a coronal one — "
+            "to find a pair. No frames were found."
+        }), 400
+
     try:
-        frames = imaging.find_frames_with_targets(folder_path)
+        eligible = _eligible_positions(folder_path, ordered, image_map, target_map)
+        if not eligible:
+            return jsonify(
+                {"error": "No valid sagittal/coronal pair exists anywhere in this series."}
+            ), 400
+        positions = imaging.default_positions(eligible, min(DEFAULT_MILESTONE_COUNT, len(eligible)))
+        selected = _select_pairs(
+            folder_path, ordered, image_map, target_map, positions, strict=False
+        )
     except imaging.PlaneDetectionError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    for frame in frames:
-        img_path = str(images_dir / frame["image_file"])
-        w, h = imaging.get_image_dimensions(img_path)
-        frame["width"] = w
-        frame["height"] = h
+    for pair in selected:
+        _add_dimensions(folder_path, pair)
+
+    # eligible is ascending (built by scanning `ordered` forward), and its first entry
+    # is exactly first_pair_position's start — i.e. the earliest sagittal frame that
+    # can anchor a valid pair. The frontend uses this to tell "typed frame snapped
+    # because it wasn't a valid pair" apart from "typed frame was below the series'
+    # actual start".
+    first_valid_frame = ordered[eligible[0]]
 
     _state["folder_path"] = folder_path
-    _state["frames"] = {f["frame_index"]: f for f in frames}
+    _state["ordered"] = ordered
+    _state["image_map"] = image_map
+    _state["target_map"] = target_map
+    _state["frames"] = {f["frame_index"]: f for pair in selected for f in pair}
+    _state["first_valid_frame"] = first_valid_frame
 
-    return jsonify({"frames": frames})
+    # Reported after resolving and deduplicating, not the raw request: with no
+    # up-front pair count, this is the first point where the real number is known.
+    return jsonify({
+        "default_count": len(selected),
+        "selected": selected,
+        "first_valid_frame": first_valid_frame,
+    })
+
+
+@api.route("/select-milestones", methods=["POST"])
+def select_milestones_route():
+    data = request.get_json()
+    folder_path = _state.get("folder_path")
+    ordered = _state.get("ordered")
+    if not folder_path or ordered is None:
+        return jsonify({"error": "No folder loaded"}), 400
+    image_map, target_map = _state["image_map"], _state["target_map"]
+
+    try:
+        if "frame_indices" in data:
+            # Each entry loads only a fresh MILESTONE_WINDOW around the requested
+            # frame — moving one milestone never re-scans the frames around any
+            # other, loaded or not. strict=True (the default): the user asked for a
+            # pair near this exact frame, so a failure here is real feedback.
+            positions = [
+                imaging.position_near(ordered, wanted) for wanted in data["frame_indices"]
+            ]
+            selected = _select_pairs(folder_path, ordered, image_map, target_map, positions)
+        else:
+            count = int(data.get("count", DEFAULT_MILESTONE_COUNT))
+            eligible = _eligible_positions(folder_path, ordered, image_map, target_map)
+            if not eligible:
+                return jsonify({
+                    "error": "No valid sagittal/coronal pair exists anywhere in this series."
+                }), 400
+            positions = imaging.default_positions(eligible, count)
+            selected = _select_pairs(
+                folder_path, ordered, image_map, target_map, positions, strict=False
+            )
+    except imaging.PlaneDetectionError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    for pair in selected:
+        _add_dimensions(folder_path, pair)
+
+    _state["frames"] = {f["frame_index"]: f for pair in selected for f in pair}
+    return jsonify({"selected": selected})
 
 
 @api.route("/frame/<frame_index>/image")
