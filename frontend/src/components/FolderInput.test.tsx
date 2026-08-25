@@ -41,10 +41,10 @@ describe("FolderInput", () => {
     expect(onLoad).not.toHaveBeenCalled();
   });
 
-  it("shows Loading text when loading", () => {
+  it("shows a spinner overlay and disables the button when loading", () => {
     render(<FolderInput onLoad={() => {}} loading={true} />);
-    const loadBtn = screen.getByRole("button", { name: /loading/i });
-    expect(loadBtn).toHaveTextContent("Loading...");
+    const loadBtn = screen.getByRole("button", { name: /load/i });
     expect(loadBtn).toBeDisabled();
+    expect(screen.getByRole("status", { name: /loading/i })).toBeInTheDocument();
   });
 });

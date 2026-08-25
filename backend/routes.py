@@ -40,7 +40,7 @@ def browse_folder():
     return jsonify({"path": path})
 
 
-DEFAULT_MILESTONE_COUNT = 5
+DEFAULT_MILESTONE_COUNT = 10
 
 # How many frames on either side of a milestone's position get their MHA headers
 # read while searching for a valid sagittal/coronal pair. Keeping this small is what

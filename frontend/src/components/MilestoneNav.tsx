@@ -28,6 +28,12 @@ export default function MilestoneNav({
   useEffect(() => setCountInput(String(milestoneCount)), [milestoneCount]);
   useEffect(() => setFrameInput(currentFrameIndex), [currentFrameIndex]);
 
+  // Sagittal frames all share one parity within a loaded series (see CLAUDE.md's
+  // note on plane detection); the currently-shown sagittal frame tells us which one,
+  // so we can reject typos of the wrong parity before ever asking the backend.
+  const parsedCurrent = parseInt(currentFrameIndex, 10);
+  const expectedParity = Number.isFinite(parsedCurrent) ? ((parsedCurrent % 2) + 2) % 2 : null;
+
   const submitCount = () => {
     const parsed = parseInt(countInput, 10);
     if (Number.isFinite(parsed) && parsed > 0 && parsed !== milestoneCount) {
@@ -39,7 +45,10 @@ export default function MilestoneNav({
 
   const submitFrameIndex = async () => {
     const trimmed = frameInput.trim();
-    if (trimmed && trimmed !== currentFrameIndex) {
+    const parsed = parseInt(trimmed, 10);
+    const wrongParity =
+      expectedParity !== null && Number.isFinite(parsed) && parsed % 2 !== expectedParity;
+    if (trimmed && trimmed !== currentFrameIndex && !wrongParity) {
       // The resolved frame can land back on currentFrameIndex (e.g. an invalid
       // number snaps right back to the frame already shown), in which case the prop
       // never changes and the sync effect below won't fire — so set it directly
@@ -65,6 +74,25 @@ export default function MilestoneNav({
         borderRadius: 6,
       }}
     >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <label htmlFor="milestone-count" style={{ fontSize: 13, color: "#555" }}>
+          Milestones:
+        </label>
+        <input
+          id="milestone-count"
+          type="number"
+          min={1}
+          value={countInput}
+          disabled={busy}
+          onChange={(e) => setCountInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitCount()}
+          style={{ width: 56, padding: "3px 6px", fontSize: 13 }}
+        />
+        <button style={btnStyle()} disabled={busy} onClick={submitCount}>
+          Change milestones
+        </button>
+      </div>
+
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
           style={btnStyle()}
@@ -89,13 +117,15 @@ export default function MilestoneNav({
         <label
           htmlFor="milestone-sagittal-frame"
           style={{ fontSize: 13, color: "#555" }}
-          title="Type any frame number; it snaps to the nearest valid sagittal/coronal pair"
+          title="Type a sagittal frame number; it snaps to the nearest valid sagittal/coronal pair"
         >
           Sagittal frame:
         </label>
         <input
           id="milestone-sagittal-frame"
           type="number"
+          step={2}
+          min={expectedParity ?? undefined}
           value={frameInput}
           disabled={busy}
           onChange={(e) => setFrameInput(e.target.value)}
@@ -103,26 +133,7 @@ export default function MilestoneNav({
           style={{ width: 80, padding: "3px 6px", fontSize: 13 }}
         />
         <button style={btnStyle()} disabled={busy} onClick={submitFrameIndex}>
-          Go
-        </button>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <label htmlFor="milestone-count" style={{ fontSize: 13, color: "#555" }}>
-          Milestones:
-        </label>
-        <input
-          id="milestone-count"
-          type="number"
-          min={1}
-          value={countInput}
-          disabled={busy}
-          onChange={(e) => setCountInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submitCount()}
-          style={{ width: 56, padding: "3px 6px", fontSize: 13 }}
-        />
-        <button style={btnStyle()} disabled={busy} onClick={submitCount}>
-          Change
+          Change frame
         </button>
       </div>
     </div>

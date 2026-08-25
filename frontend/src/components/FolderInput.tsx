@@ -1,4 +1,5 @@
 import { useState } from "react";
+import LoadingOverlay from "./LoadingOverlay";
 
 interface Props {
   onLoad: (path: string) => void;
@@ -29,7 +30,7 @@ export default function FolderInput({ onLoad, loading }: Props) {
         Select a scan folder (should contain subfolders such as{" "}
         <strong>TwoDImages</strong> and <strong>ExamCards</strong>).
       </p>
-      <div style={{ display: "flex", gap: 8 }}>
+      <LoadingOverlay active={loading} wrapperStyle={{ display: "flex", gap: 8 }}>
         <button
         onClick={handleBrowse}
         disabled={loading || browsing}
@@ -52,9 +53,9 @@ export default function FolderInput({ onLoad, loading }: Props) {
         disabled={loading || !path.trim()}
         style={{ padding: "6px 16px", fontSize: 14 }}
       >
-        {loading ? "Loading..." : "Load"}
+        Load
       </button>
-      </div>
+      </LoadingOverlay>
     </div>
   );
 }

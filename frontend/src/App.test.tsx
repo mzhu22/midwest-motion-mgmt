@@ -338,7 +338,7 @@ describe("App multi-milestone navigation", () => {
     const countInput = screen.getByLabelText(/milestones/i);
     await user.clear(countInput);
     await user.type(countInput, "1");
-    await user.click(screen.getByRole("button", { name: /change/i }));
+    await user.click(screen.getByRole("button", { name: /change milestones/i }));
 
     await waitFor(() => expect(screen.getByText("Milestone 1 of 1")).toBeInTheDocument());
   });

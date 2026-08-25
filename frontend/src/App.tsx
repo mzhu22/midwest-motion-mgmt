@@ -3,6 +3,7 @@ import type Konva from "konva";
 import FolderInput from "./components/FolderInput";
 import FrameViewer from "./components/FrameViewer";
 import LabelPanel from "./components/LabelPanel";
+import LoadingOverlay from "./components/LoadingOverlay";
 import MilestoneNav from "./components/MilestoneNav";
 import type { FrameInfo, LineData } from "./types";
 import { exportMasksForFrame } from "./exportMasks";
@@ -295,7 +296,10 @@ export default function App() {
             savedPath={savedPath}
             replacedCount={replacedCount}
           />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}>
+          <LoadingOverlay
+            active={milestoneBusy}
+            wrapperStyle={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}
+          >
             {frames.map((frame, i) => {
               // Every milestone's frame stays mounted for the whole session — even
               // ones not currently shown — because handleSave exports masks from
@@ -331,7 +335,7 @@ export default function App() {
                 </div>
               );
             })}
-          </div>
+          </LoadingOverlay>
         </div>
       )}
     </div>

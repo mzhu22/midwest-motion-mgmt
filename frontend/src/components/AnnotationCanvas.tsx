@@ -4,6 +4,7 @@ import type Konva from "konva";
 import type { LineData } from "../types";
 import { COLORS } from "../types";
 import { btnStyle } from "./buttonStyle";
+import LoadingOverlay from "./LoadingOverlay";
 
 interface Props {
   frameIndex: string;
@@ -180,57 +181,59 @@ export default function AnnotationCanvas({
           ↺ Reset
         </button>
       </div>
-      <Stage
-        ref={stageRef}
-        width={displayW}
-        height={displayH}
-        scaleX={transform.zoom}
-        scaleY={transform.zoom}
-        x={transform.x}
-        y={transform.y}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
-        onContextMenu={(e) => e.evt.preventDefault()}
-        style={{
-          border: "1px solid #ccc",
-          cursor: panMode
-            ? "grab"
-            : "crosshair"
-        }}
-      >
-        <Layer>
-          {baseImage && (
-            <KonvaImage image={baseImage} width={displayW} height={displayH} />
-          )}
-        </Layer>
-        <Layer>
-          {contourImage && (
-            <KonvaImage
-              image={contourImage}
-              width={displayW}
-              height={displayH}
-              opacity={0.8}
-            />
-          )}
-        </Layer>
-        <Layer>
-          {lines.map((line, i) => (
-            <Line
-              key={i}
-              points={line.points.map((p) => p * DISPLAY_SCALE)}
-              stroke={line.stroke}
-              strokeWidth={line.strokeWidth * DISPLAY_SCALE}
-              tension={0.5}
-              lineCap="round"
-              lineJoin="round"
-              opacity={0.6}
-            />
-          ))}
-        </Layer>
-      </Stage>
+      <LoadingOverlay active={!baseImage} wrapperStyle={{ display: "inline-block" }}>
+        <Stage
+          ref={stageRef}
+          width={displayW}
+          height={displayH}
+          scaleX={transform.zoom}
+          scaleY={transform.zoom}
+          x={transform.x}
+          y={transform.y}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onWheel={handleWheel}
+          onContextMenu={(e) => e.evt.preventDefault()}
+          style={{
+            border: "1px solid #ccc",
+            cursor: panMode
+              ? "grab"
+              : "crosshair"
+          }}
+        >
+          <Layer>
+            {baseImage && (
+              <KonvaImage image={baseImage} width={displayW} height={displayH} />
+            )}
+          </Layer>
+          <Layer>
+            {contourImage && (
+              <KonvaImage
+                image={contourImage}
+                width={displayW}
+                height={displayH}
+                opacity={0.8}
+              />
+            )}
+          </Layer>
+          <Layer>
+            {lines.map((line, i) => (
+              <Line
+                key={i}
+                points={line.points.map((p) => p * DISPLAY_SCALE)}
+                stroke={line.stroke}
+                strokeWidth={line.strokeWidth * DISPLAY_SCALE}
+                tension={0.5}
+                lineCap="round"
+                lineJoin="round"
+                opacity={0.6}
+              />
+            ))}
+          </Layer>
+        </Stage>
+      </LoadingOverlay>
     </div>
   );
 }
