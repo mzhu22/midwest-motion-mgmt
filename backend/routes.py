@@ -261,20 +261,39 @@ def save():
     labels = data.get("labels", {})
     frames_data = data.get("frames", [])
 
-    # Refuse a save with nothing drawn, and refuse it *before* clearing: a save that
-    # would write no objects has nothing to offer over the target contour the tracker
-    # already reads from the image, so letting it through would only destroy a good
-    # earlier save. Object 0 is the target and is dropped on write, so it does not count.
-    has_objects = any(
-        mask
-        for frame_data in frames_data
-        for mask in frame_data.get("masks", [])[imaging.TARGET_OBJECT_ID + 1 :]
-    )
-    if not has_objects:
+    # Refuse a save where any milestone has nothing drawn, and refuse it *before*
+    # clearing: milestones exist to give the tracker several correction points spaced
+    # across the series, so one left blank would seed nothing there and just fall back
+    # to the target contour alone — the same as if the whole save were empty, just
+    # localized to that milestone. Letting it through would also destroy a good earlier
+    # save. Object 0 is the target and is dropped on write, so it does not count.
+    # frames_data arrives in milestone pairs (the frontend's frames[2m], frames[2m+1]
+    # convention — see App.tsx's milestoneIndex comment).
+    def _pair_has_objects(pair: list[dict]) -> bool:
+        return any(
+            mask
+            for frame_data in pair
+            for mask in frame_data.get("masks", [])[imaging.TARGET_OBJECT_ID + 1 :]
+        )
+
+    milestones = [frames_data[i : i + 2] for i in range(0, len(frames_data), 2)]
+    empty_milestones = [pair for pair in milestones if not _pair_has_objects(pair)]
+
+    if len(empty_milestones) == len(milestones):
         return jsonify(
             {
                 "error": "No object contours were drawn. The target contour is saved "
                 "from the original image automatically; draw at least one other object."
+            }
+        ), 400
+    if empty_milestones:
+        frame_list = ", ".join(
+            pair[0].get("frame_index", "?") for pair in empty_milestones
+        )
+        return jsonify(
+            {
+                "error": "Every milestone needs at least one drawn object. Empty "
+                f"milestones (sagittal frame): {frame_list}"
             }
         ), 400
 

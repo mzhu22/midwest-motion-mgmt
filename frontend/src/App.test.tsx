@@ -295,11 +295,14 @@ describe("App multi-milestone navigation", () => {
     render(<App />);
     await loadFrames(user);
 
-    // Draw on milestone 1, then navigate away to the last milestone before saving.
+    // Every milestone needs its own drawn object, so draw on all three before saving,
+    // navigating away from the first two to confirm their frames stay in the payload.
     await user.click(screen.getByRole("button", { name: "draw-00001" }));
     await user.type(screen.getAllByPlaceholderText(/Object \d/)[0]!, "liver");
     await user.click(screen.getByRole("button", { name: /next/i }));
+    await user.click(screen.getByRole("button", { name: "draw-00003" }));
     await user.click(screen.getByRole("button", { name: /next/i }));
+    await user.click(screen.getByRole("button", { name: "draw-00005" }));
     expect(screen.getByText("Milestone 3 of 3")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /save annotations/i }));
@@ -317,6 +320,24 @@ describe("App multi-milestone navigation", () => {
       "00005",
       "00006",
     ]);
+  });
+
+  it("rejects a save when a milestone has no drawn object", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    // Draw only on milestone 1; milestones 2 and 3 stay empty.
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(screen.getAllByPlaceholderText(/Object \d/)[0]!, "liver");
+
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/every milestone needs at least one drawn object/i)).toBeInTheDocument()
+    );
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/save", expect.anything());
   });
 
   it("changing the milestone count re-fetches and updates the selection", async () => {

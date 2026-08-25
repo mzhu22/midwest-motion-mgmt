@@ -309,6 +309,32 @@ class TestSave:
             "00001_annotation.mha",
         ]
 
+    def test_save_with_one_empty_milestone_is_rejected(self, client, tmp_multi_pair_dir):
+        """Drawing on some milestones but not others still fails: each milestone is
+        a separate correction point for the tracker, so an empty one seeds nothing
+        there even though the save as a whole isn't empty."""
+        resp = client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        assert resp.status_code == 200
+        assert resp.get_json()["default_count"] == 3
+
+        resp = client.post("/api/save", json={
+            "labels": {"1": "tumor"},
+            "frames": [
+                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
+                {"frame_index": "00002", "masks": ["", self._make_mask_b64()]},
+                {"frame_index": "00003", "masks": ["", ""]},
+                {"frame_index": "00004", "masks": []},
+                {"frame_index": "00005", "masks": ["", self._make_mask_b64()]},
+                {"frame_index": "00006", "masks": ["", self._make_mask_b64()]},
+            ],
+        })
+        assert resp.status_code == 400
+        error = resp.get_json()["error"]
+        assert "Every milestone" in error
+        assert "00003" in error
+        assert "00001" not in error
+        assert "00005" not in error
+
     def test_a_two_frame_save_keeps_both_frames(self, loaded_client, tmp_input_dir):
         """Clearing runs once per save, not once per frame.
 

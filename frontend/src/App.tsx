@@ -164,16 +164,33 @@ export default function App() {
 
     const validationErrors: string[] = [];
 
-    // An object drawn on only one plane is fine — it is simply tracked in that plane
-    // alone. Drawing nothing at all is not: the target contour is saved from the
-    // original image either way, so such a save would add nothing.
-    const drewSomething = frames.some(
-      (frame) => (frameLines[frame.frame_index] ?? []).length > 0
-    );
-    if (!drewSomething) {
+    // Every milestone must contribute at least one drawn object. Milestones exist to
+    // give the tracker several correction points spaced across the series; one left
+    // blank would seed nothing there and just fall back to the target contour alone,
+    // defeating the reason that milestone was picked. An object drawn on only one
+    // plane of a milestone's pair is still fine — it is simply tracked in that plane
+    // alone. Milestone m is frames[2m] and frames[2m+1] (see milestoneIndex above).
+    const emptyMilestones: string[] = [];
+    for (let m = 0; m < frames.length; m += 2) {
+      const pair = frames.slice(m, m + 2);
+      const pairDrewSomething = pair.some(
+        (frame) => (frameLines[frame.frame_index] ?? []).length > 0
+      );
+      if (!pairDrewSomething) {
+        emptyMilestones.push(`Milestone ${m / 2 + 1} (sagittal frame ${frames[m]!.frame_index})`);
+      }
+    }
+    if (emptyMilestones.length === frames.length / 2) {
       setError(
         "Draw at least one object contour before saving. The pink target contour is " +
           "reference only — it is taken from the original image automatically."
+      );
+      return;
+    }
+    if (emptyMilestones.length > 0) {
+      setError(
+        "Every milestone needs at least one drawn object. Empty: " +
+          emptyMilestones.join(", ")
       );
       return;
     }
@@ -252,11 +269,18 @@ export default function App() {
             color: "#374151",
           }}
         >
-          <strong>Instructions: </strong>
-          <br />
-          The target contour is shown in <strong style={{ color: "#FF1493" }}>pink</strong>. Draw one or more <strong>additional objects</strong>: select an object on the left, then draw a contour over it. Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. To fix a mistake, click <strong>✕ Clear</strong> above that frame. An object drawn on only one frame is tracked in that plane only.
-          <br /><br />
-          Enter a <strong>label</strong> for each object you draw. When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
+          <p style={{ margin: "0 0 6px" }}>
+            <strong>Instructions:</strong>
+          </p>
+          <p style={{ margin: "0 0 6px" }}>
+            1. You can adjust the number of milestone frames to annotate, and which frame represents each milestone. By default, milestone frames are distributed evenly across the video. Try to capture a range of motion for each object to improve tracking.
+          </p>
+          <p style={{ margin: "0 0 6px" }}>
+            2. The target is shown in <strong style={{ color: "#FF1493" }}>pink</strong>. Draw one or more <strong>additional objects</strong>: select an object on the left, then draw a contour over it. Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. To fix a mistake, click <strong>✕ Clear</strong> above that frame.
+          </p>
+          <p style={{ margin: 0 }}>
+            3. Enter a <strong>label</strong> for each object you draw. When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
+          </p>
         </div>
       )}
 
