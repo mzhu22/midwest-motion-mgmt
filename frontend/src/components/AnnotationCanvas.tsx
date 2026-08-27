@@ -3,6 +3,7 @@ import { Stage, Layer, Line, Image as KonvaImage } from "react-konva";
 import type Konva from "konva";
 import type { LineData } from "../types";
 import { COLORS } from "../types";
+import { rasterizeExactPixels } from "../pixelPreview";
 import { btnStyle } from "./buttonStyle";
 import LoadingOverlay from "./LoadingOverlay";
 
@@ -49,12 +50,31 @@ export default function AnnotationCanvas({
 
   const [transform, setTransform] = useState({ zoom: 1, x: 0, y: 0 });
   const [panMode, setPanMode] = useState(false);
+  // Whether a stroke is actively being dragged, kept as state (not just the
+  // isDrawing ref below) so it can gate which layer renders and when the pixel
+  // preview is recomputed.
+  const [drawingActive, setDrawingActive] = useState(false);
+  // The exact pixels that would be saved for the strokes drawn so far -- see
+  // pixelPreview.ts. Shown once a stroke finishes, in place of the smoothed,
+  // anti-aliased line, so the user can review pixelwise accuracy.
+  const [pixelPreview, setPixelPreview] = useState<HTMLCanvasElement | null>(null);
 
   const baseImage = useImage(`/api/frame/${frameIndex}/image`);
   const contourImage = useImage(`/api/frame/${frameIndex}/target-contour`);
 
   const displayW = width * DISPLAY_SCALE;
   const displayH = height * DISPLAY_SCALE;
+
+  // Recomputes once a stroke finishes (drawingActive flips false) and whenever
+  // lines change from outside a drag (e.g. Clear, or a frame swap). Skipped while
+  // drawingActive is true so a drag's own mousemove-driven line updates don't each
+  // trigger a rasterize pass.
+  useEffect(() => {
+    if (drawingActive) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    setPixelPreview(rasterizeExactPixels(stage, width, height, lines));
+  }, [lines, drawingActive, width, height, stageRef]);
 
   // Prevent native scroll when wheeling over the canvas
   useEffect(() => {
@@ -111,6 +131,7 @@ export default function AnnotationCanvas({
       if (e.evt.button !== 0) return;
 
       isDrawing.current = true;
+      setDrawingActive(true);
       const stage = e.target.getStage();
       const pos = stage?.getPointerPosition();
       if (!pos || !stage) return;
@@ -155,7 +176,13 @@ export default function AnnotationCanvas({
   const handleMouseUp = useCallback(() => {
     isDrawing.current = false;
     isPanning.current = false;
+    setDrawingActive(false);
   }, []);
+
+  // While a stroke is in progress, show the live smoothed line for responsiveness;
+  // once it's done, swap to the rasterized preview so review reflects exactly what
+  // gets saved.
+  const showPixelPreview = !drawingActive && pixelPreview !== null;
 
   return (
     <div ref={containerRef} style={{ display: "inline-block" }}>
@@ -229,8 +256,23 @@ export default function AnnotationCanvas({
                 lineCap="round"
                 lineJoin="round"
                 opacity={0.6}
+                // Hidden (not removed) once a stroke finishes and the exact-pixel
+                // preview below takes over -- rasterizeExactPixels needs these nodes
+                // present and force-toggles their visibility itself while rasterizing,
+                // then restores whatever this prop currently says.
+                visible={!showPixelPreview}
               />
             ))}
+          </Layer>
+          <Layer>
+            {showPixelPreview && pixelPreview && (
+              <KonvaImage
+                image={pixelPreview}
+                width={displayW}
+                height={displayH}
+                listening={false}
+              />
+            )}
           </Layer>
         </Stage>
       </LoadingOverlay>
