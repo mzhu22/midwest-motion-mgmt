@@ -2,29 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { rasterizeContours } from "./contour";
+import { decodeIds, encodeIds } from "./idsCodec";
 
-// Konva can't run in jsdom, so stand in for the canvas with a button that appends
-// one stroke for the active object — enough to exercise App's per-frame stroke state.
+// Konva can't run in jsdom, so stand in for the canvas with buttons that put a contour
+// on the active object -- enough to exercise App's per-frame contour state. "draw" makes
+// a closed square; "cut" makes a thin loop that crosses the square's top edge.
 vi.mock("./components/AnnotationCanvas", () => ({
-  default: ({ frameIndex, activeColorIndex, lines, onLinesChange }: any) => (
-    <div data-testid="annotation-canvas">
-      <button
-        onClick={() =>
-          onLinesChange([
-            ...lines,
-            {
-              points: [0, 0, 5, 5],
-              stroke: "#FF0000",
-              strokeWidth: 2,
-              objectIndex: activeColorIndex,
-            },
-          ])
-        }
-      >
-        draw-{frameIndex}
-      </button>
-    </div>
-  ),
+  default: ({ frameIndex, activeColorIndex, contours, onContoursChange }: any) => {
+    const put = (points: number[]) =>
+      onContoursChange([
+        ...contours.filter((c: any) => c.objectIndex !== activeColorIndex),
+        { objectIndex: activeColorIndex, points },
+      ]);
+    return (
+      <div data-testid="annotation-canvas">
+        <span data-testid={`contours-${frameIndex}`}>
+          {contours.map((c: any) => c.objectIndex).join(",")}
+        </span>
+        <button onClick={() => put([10.5, 10.5, 40.5, 10.5, 40.5, 40.5, 10.5, 40.5])}>
+          draw-{frameIndex}
+        </button>
+        <button onClick={() => put([25.5, 5.5, 25.5, 15.5])}>cut-{frameIndex}</button>
+      </div>
+    );
+  },
 }));
 
 const mockFrames = [
@@ -362,5 +364,299 @@ describe("App multi-milestone navigation", () => {
     await user.click(screen.getByRole("button", { name: /change milestones/i }));
 
     await waitFor(() => expect(screen.getByText("Milestone 1 of 1")).toBeInTheDocument());
+  });
+});
+
+
+describe("App loading saved annotations", () => {
+  const SQUARE = [10.5, 10.5, 40.5, 10.5, 40.5, 40.5, 10.5, 40.5];
+
+  const loadFolderResponse = (hasAnnotations: boolean) => ({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        default_count: 1,
+        selected: [mockFrames],
+        has_annotations: hasAnnotations,
+      }),
+  });
+
+  // The saved label image for a frame holding `contours`, as the backend sends it.
+  function reference(contours: { objectIndex: number; points: number[] }[]) {
+    return encodeIds(rasterizeContours(128, 96, contours));
+  }
+
+  function annotationsResponse(notes: string[] = []) {
+    const sag = [
+      { objectIndex: 1, points: SQUARE },
+      { objectIndex: 3, points: [60.5, 60.5, 80.5, 60.5, 80.5, 80.5, 60.5, 80.5] },
+    ];
+    const cor = [{ objectIndex: 1, points: SQUARE }];
+    return {
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          selected: [mockFrames],
+          labels: { "1": "liver", "3": "spleen" },
+          frames: {
+            "00001": {
+              objects: { "1": sag[0]!.points, "3": sag[1]!.points },
+              notes,
+              reference: reference(sag),
+            },
+            "00002": { objects: { "1": cor[0]!.points }, notes: [], reference: reference(cor) },
+          },
+        }),
+    };
+  }
+
+  function stubFetch(hasAnnotations: boolean, annotations: object = annotationsResponse()) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/load-folder") return Promise.resolve(loadFolderResponse(hasAnnotations));
+        if (url === "/api/load-annotations") return Promise.resolve(annotations);
+        if (url === "/api/save") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) });
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      })
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("offers nothing to load when the folder has no saved annotations", async () => {
+    stubFetch(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    expect(
+      screen.queryByRole("button", { name: /load existing annotations/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers to load when the folder has saved annotations, without loading them unasked", async () => {
+    stubFetch(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    expect(screen.getByRole("button", { name: /load existing annotations/i })).toBeInTheDocument();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/load-annotations", expect.anything());
+    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
+  });
+
+  it("restores every saved object as one contour and the labels", async () => {
+    stubFetch(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+
+    await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
+    expect(screen.getByTestId("contours-00002")).toHaveTextContent("1");
+    const labelInputs = screen.getAllByPlaceholderText(/Object \d/) as HTMLInputElement[];
+    expect(labelInputs[0]!.value).toBe("liver");
+    expect(labelInputs[1]!.value).toBe("");
+    expect(labelInputs[2]!.value).toBe("spleen");
+  });
+
+  it("says the loaded contours match when they reproduce the saved pixels", async () => {
+    stubFetch(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+
+    await waitFor(() => expect(screen.getByText(/match the saved masks exactly/i)).toBeInTheDocument());
+  });
+
+  it("reports how far the loaded contours are from the saved masks when they are not", async () => {
+    const response = annotationsResponse();
+    const body = await response.json();
+    // The saved image holds a different shape than the contour that came back.
+    body.frames["00001"].reference = encodeIds(
+      rasterizeContours(128, 96, [
+        { objectIndex: 1, points: [30.5, 30.5, 70.5, 30.5, 70.5, 70.5, 30.5, 70.5] },
+      ])
+    );
+    stubFetch(true, { ok: true, json: () => Promise.resolve(body) });
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+
+    await waitFor(() => expect(screen.getByText(/differ from the saved masks by/i)).toBeInTheDocument());
+  });
+
+  it("passes on what the backend had to do to recover an outline", async () => {
+    stubFetch(true, annotationsResponse(["object 3: a second, separate part of the outline was dropped (12 px)"]));
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+
+    await waitFor(() => expect(screen.getByText(/separate part of the outline was dropped/i)).toBeInTheDocument());
+    expect(screen.getByText(/Frame 00001, object 3/)).toBeInTheDocument();
+  });
+
+  it("saves what was loaded without needing a redraw", async () => {
+    stubFetch(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+    await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
+
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/save", expect.anything())
+    );
+    const [, opts] = vi.mocked(fetch).mock.calls.find(([url]) => url === "/api/save")!;
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(decodeIds(body.frames[0].object_ids)).toEqual(
+      rasterizeContours(128, 96, [
+        { objectIndex: 1, points: SQUARE },
+        { objectIndex: 3, points: [60.5, 60.5, 80.5, 60.5, 80.5, 80.5, 60.5, 80.5] },
+      ])
+    );
+    expect(body.labels).toEqual({ "1": "liver", "3": "spleen" });
+  });
+
+  it("shows the server's message and keeps the current work when loading fails", async () => {
+    stubFetch(true, {
+      ok: false,
+      json: () => Promise.resolve({ error: "Saved annotations are not a set of pairs." }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+
+    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/not a set of pairs/i)).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("contours-00001")).toHaveTextContent("1");
+  });
+});
+
+describe("App editing", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url === "/api/load-folder") {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ default_count: 1, selected: [mockFrames] }),
+          });
+        }
+        if (url === "/api/save") {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) });
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      })
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("undo takes back the last change on that frame only", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    const undo = () => screen.getAllByRole("button", { name: /undo/i });
+    expect(undo()[0]).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.click(screen.getByRole("button", { name: "draw-00002" }));
+    expect(undo()[0]).toBeEnabled();
+    expect(undo()[1]).toBeEnabled();
+
+    await user.click(undo()[0]!);
+
+    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
+    expect(screen.getByTestId("contours-00002")).toHaveTextContent("1");
+    expect(undo()[0]).toBeDisabled();
+  });
+
+  it("undo also takes back a clear", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.click(screen.getAllByRole("button", { name: /clear/i })[0]!);
+    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
+
+    await user.click(screen.getAllByRole("button", { name: /undo/i })[0]!);
+
+    expect(screen.getByTestId("contours-00001")).toHaveTextContent("1");
+  });
+
+  it("sends the saved pixels, one byte each, rather than strokes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(screen.getAllByPlaceholderText(/Object \d/)[0]!, "liver");
+
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/save", expect.anything())
+    );
+    const [, opts] = vi.mocked(fetch).mock.calls.find(([url]) => url === "/api/save")!;
+    const body = JSON.parse((opts as RequestInit).body as string);
+    expect(body.frames).toHaveLength(2);
+    for (const f of body.frames) expect(atob(f.object_ids)).toHaveLength(128 * 96);
+    const ids = decodeIds(body.frames[0].object_ids);
+    expect(new Set(ids)).toEqual(new Set([0, 1]));
+    expect(decodeIds(body.frames[1].object_ids).some((v) => v !== 0)).toBe(false);
+  });
+
+  it("refuses to save when one object's outline cuts through another's, and says which", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    const labelInputs = () => screen.getAllByPlaceholderText(/Object \d/);
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(labelInputs()[0]!, "liver");
+    await user.click(labelInputs()[1]!);
+    await user.type(labelInputs()[1]!, "spleen");
+    await user.click(screen.getByRole("button", { name: "cut-00001" }));
+
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() => expect(screen.getAllByText(/not a closed outline/i).length).toBeGreaterThan(0));
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/save", expect.anything());
+  });
+
+  it("lets the same frame save again once the crossing is undone", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+    const labelInputs = () => screen.getAllByPlaceholderText(/Object \d/);
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(labelInputs()[0]!, "liver");
+    await user.click(labelInputs()[1]!);
+    await user.type(labelInputs()[1]!, "spleen");
+    await user.click(screen.getByRole("button", { name: "cut-00001" }));
+    await user.click(screen.getAllByRole("button", { name: /undo/i })[0]!);
+
+    await user.click(screen.getByRole("button", { name: /^save annotations$/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/save", expect.anything())
+    );
   });
 });

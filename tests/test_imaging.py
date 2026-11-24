@@ -420,13 +420,16 @@ class TestGetImageDimensions:
 
 # --- save_annotations ---
 
+_NO_OBJECTS = np.zeros((8, 8), dtype=np.uint8)
+
+
 class TestClearAnnotations:
     def test_removes_the_directory_and_reports_what_was_in_it(self, tmp_input_dir):
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [], {"0": "tumor"}, "00001_Frame.mha",
+            str(tmp_input_dir), "00001", _NO_OBJECTS, {"0": "tumor"}, "00001_Frame.mha",
         )
         imaging.save_annotations(
-            str(tmp_input_dir), "00002", [], {"0": "tumor"}, "00002_Frame.mha",
+            str(tmp_input_dir), "00002", _NO_OBJECTS, {"0": "tumor"}, "00002_Frame.mha",
         )
 
         removed = imaging.clear_annotations(str(tmp_input_dir))
@@ -458,13 +461,13 @@ class TestClearAnnotations:
         00287/00288 save, or downstream seeds each stack from the wrong frame."""
         for idx in ("00285", "00286"):
             imaging.save_annotations(
-                str(tmp_input_dir), idx, [], {"0": "tumor"}, "00001_Frame.mha",
+                str(tmp_input_dir), idx, _NO_OBJECTS, {"0": "tumor"}, "00001_Frame.mha",
             )
 
         imaging.clear_annotations(str(tmp_input_dir))
         for idx in ("00287", "00288"):
             imaging.save_annotations(
-                str(tmp_input_dir), idx, [], {"0": "tumor"}, "00001_Frame.mha",
+                str(tmp_input_dir), idx, _NO_OBJECTS, {"0": "tumor"}, "00001_Frame.mha",
             )
 
         annotations_dir = tmp_input_dir / "Annotations"
@@ -473,15 +476,9 @@ class TestClearAnnotations:
 
 
 class TestSaveAnnotations:
-    def _make_mask_b64(self, w, h, value=255):
-        img = Image.new("L", (w, h), value)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
-
     def test_creates_annotation_file(self, tmp_input_dir):
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [self._make_mask_b64(8, 8)],
+            str(tmp_input_dir), "00001", _square_outline(),
             {"0": "tumor"}, "00001_Frame.mha",
         )
         out = tmp_input_dir / "Annotations" / "00001_annotation.mha"
@@ -489,7 +486,7 @@ class TestSaveAnnotations:
 
     def test_creates_labels_json(self, tmp_input_dir):
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [],
+            str(tmp_input_dir), "00001", _NO_OBJECTS,
             {"0": "tumor", "1": "organ"}, "00001_Frame.mha",
         )
         labels_path = tmp_input_dir / "Annotations" / "labels.json"
@@ -499,7 +496,7 @@ class TestSaveAnnotations:
 
     def test_empty_labels_excluded(self, tmp_input_dir):
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [],
+            str(tmp_input_dir), "00001", _NO_OBJECTS,
             {"0": "tumor", "1": ""}, "00001_Frame.mha",
         )
         labels_path = tmp_input_dir / "Annotations" / "labels.json"
@@ -517,7 +514,7 @@ class TestSaveAnnotations:
         )
 
         imaging.save_annotations(
-            str(tmp_input_dir), "00099", [],
+            str(tmp_input_dir), "00099", _NO_OBJECTS,
             {}, "00099_Frame.mha",
         )
         out = tmp_input_dir / "Annotations" / "00099_annotation.mha"
@@ -528,7 +525,7 @@ class TestSaveAnnotations:
     def test_preserves_direction_cosines(self, tmp_input_dir):
         """Without the slice normal the saved annotation's plane is unrecoverable."""
         imaging.save_annotations(
-            str(tmp_input_dir), "00002", [],
+            str(tmp_input_dir), "00002", _NO_OBJECTS,
             {}, "00002_Frame.mha",
         )
         out = tmp_input_dir / "Annotations" / "00002_annotation.mha"
@@ -538,29 +535,110 @@ class TestSaveAnnotations:
         # The saved file must round-trip back to the plane it was annotated on.
         assert imaging._read_plane(str(out)) == "coronal"
 
-    def test_mask_pixel_values(self, tmp_input_dir):
-        mask_b64 = self._make_mask_b64(8, 8, value=255)
-        imaging.save_annotations(
-            str(tmp_input_dir), "00001", ["", mask_b64],
-            {}, "00001_Frame.mha",
-        )
-        out = tmp_input_dir / "Annotations" / "00001_annotation.mha"
-        result = sitk.ReadImage(str(out))
-        arr = sitk.GetArrayFromImage(result)
-        assert 1 in arr  # object index 1 written where mask was white
+    def test_object_pixels_are_written_with_their_id_and_the_rest_is_background(
+        self, tmp_input_dir
+    ):
+        ids = np.zeros((8, 8), dtype=np.uint8)
+        ids[2, 3] = 1
+        ids[5, 5] = 4
+        imaging.save_annotations(str(tmp_input_dir), "00001", ids, {}, "00001_Frame.mha")
+        arr = sitk.GetArrayFromImage(
+            sitk.ReadImage(str(tmp_input_dir / "Annotations" / "00001_annotation.mha"))
+        ).squeeze()
+        assert arr[2, 3] == 1 and arr[5, 5] == 4
+        assert (arr == 255).sum() == 62
 
-    def test_mask_at_the_target_index_is_ignored(self, tmp_input_dir):
-        """Object 0 is the target: mr-linac-iowa reads it from TargetStructure/.
-
-        A traced copy in the annotation would shadow the real contour, so the writer
-        drops it even if a client sends one.
-        """
-        mask_b64 = self._make_mask_b64(8, 8, value=255)
+    def test_nothing_is_written_at_the_target_index(self, tmp_input_dir):
+        """Id 0 means "no object" and is the target's id: mr-linac-iowa reads the target
+        from TargetStructure/, so a copy here would only shadow the real contour."""
         imaging.save_annotations(
-            str(tmp_input_dir), "00001", [mask_b64, mask_b64],
-            {}, "00001_Frame.mha",
+            str(tmp_input_dir), "00001", _NO_OBJECTS, {}, "00001_Frame.mha"
         )
-        out = tmp_input_dir / "Annotations" / "00001_annotation.mha"
-        arr = sitk.GetArrayFromImage(sitk.ReadImage(str(out)))
+        arr = sitk.GetArrayFromImage(
+            sitk.ReadImage(str(tmp_input_dir / "Annotations" / "00001_annotation.mha"))
+        )
         assert 0 not in arr
-        assert 1 in arr
+
+    def test_rejects_a_label_image_of_the_wrong_size(self, tmp_input_dir):
+        with pytest.raises(ValueError, match="4x4"):
+            imaging.save_annotations(
+                str(tmp_input_dir), "00001", np.zeros((4, 4), np.uint8), {}, "00001_Frame.mha"
+            )
+
+
+def _encode(ids: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(ids, dtype=np.uint8).tobytes()).decode()
+
+
+def _square_outline(size=8, lo=1, hi=6, obj=1):
+    ids = np.zeros((size, size), dtype=np.uint8)
+    ids[lo, lo : hi + 1] = obj
+    ids[hi, lo : hi + 1] = obj
+    ids[lo : hi + 1, lo] = obj
+    ids[lo : hi + 1, hi] = obj
+    return ids
+
+
+class TestDecodeObjectIds:
+    def test_round_trips_a_label_image(self):
+        ids = _square_outline()
+        assert (imaging.decode_object_ids(_encode(ids), 8, 8) == ids).all()
+
+    def test_wrong_length_is_rejected(self):
+        with pytest.raises(ValueError, match="64"):
+            imaging.decode_object_ids(_encode(np.zeros((4, 4))), 8, 8)
+
+    def test_not_base64_is_rejected(self):
+        with pytest.raises(ValueError, match="base64"):
+            imaging.decode_object_ids("!!not base64!!", 8, 8)
+
+    def test_an_id_above_the_drawable_range_is_rejected(self):
+        ids = np.zeros((8, 8), np.uint8)
+        ids[0, 0] = 8
+        with pytest.raises(ValueError, match="above 7"):
+            imaging.decode_object_ids(_encode(ids), 8, 8)
+
+
+class TestFindUnclosedObjects:
+    """The check mr-linac-iowa's `binary_fill_holes(arr == obj_id)` makes implicit."""
+
+    def test_a_closed_outline_is_closed(self):
+        assert imaging.find_unclosed_objects(_square_outline()) == []
+
+    def test_an_outline_with_a_gap_is_unclosed(self):
+        ids = _square_outline()
+        ids[1, 3] = 0
+        assert imaging.find_unclosed_objects(ids) == [1]
+
+    def test_a_diagonal_join_still_closes(self):
+        """8-connected outlines are fine: the fill floods the background 4-connected."""
+        ids = np.zeros((7, 7), np.uint8)
+        for r, c in [(1, 2), (2, 1), (3, 2), (2, 3)]:
+            ids[r, c] = 2
+        assert imaging.find_unclosed_objects(ids) == []
+
+    def test_a_line_encloses_nothing(self):
+        ids = np.zeros((8, 8), np.uint8)
+        ids[4, 1:7] = 1
+        assert imaging.find_unclosed_objects(ids) == [1]
+
+    def test_another_objects_outline_cutting_through_opens_it(self):
+        ids = _square_outline(obj=1)
+        ids[1, 3] = 2  # object 2 overwrote a pixel of object 1's outline
+        assert 1 in imaging.find_unclosed_objects(ids)
+
+    def test_a_cut_up_outline_is_unclosed_even_if_one_piece_still_encloses_a_pocket(self):
+        """The fill alone would accept this: the small loop encloses area. But the object
+        is a loop plus a detached fragment, i.e. an outline something has cut through."""
+        ids = np.zeros((12, 12), np.uint8)
+        ids[1, 1:4] = 1
+        ids[3, 1:4] = 1
+        ids[2, 1] = 1
+        ids[2, 3] = 1  # a closed 3x3 loop
+        ids[8, 2:9] = 1  # a separate fragment of the same object
+        assert imaging.find_unclosed_objects(ids) == [1]
+
+    def test_each_object_is_judged_separately(self):
+        ids = _square_outline(obj=1)
+        ids[3, 3] = 2  # a lone pixel of another object inside
+        assert imaging.find_unclosed_objects(ids) == [2]

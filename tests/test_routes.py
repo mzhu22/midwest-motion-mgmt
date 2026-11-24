@@ -210,46 +210,57 @@ class TestFrameTargetContour:
 
 # --- POST /api/save ---
 
-class TestSave:
-    def _make_mask_b64(self, w=8, h=8):
-        img = Image.new("L", (w, h), 255)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
+def _ids_b64(ids: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(ids, dtype=np.uint8).tobytes()).decode()
 
+
+def _outline(obj=1, size=8, lo=1, hi=6) -> np.ndarray:
+    """A closed 1 px square outline, the way the frontend rasterizes a contour."""
+    ids = np.zeros((size, size), dtype=np.uint8)
+    ids[lo, lo : hi + 1] = obj
+    ids[hi, lo : hi + 1] = obj
+    ids[lo : hi + 1, lo] = obj
+    ids[lo : hi + 1, hi] = obj
+    return ids
+
+
+def _frame(idx: str, ids: np.ndarray | None = None) -> dict:
+    ids = np.zeros((8, 8), np.uint8) if ids is None else ids
+    return {"frame_index": idx, "object_ids": _ids_b64(ids)}
+
+
+class TestSave:
     def test_save_success(self, loaded_client, tmp_input_dir):
         resp = loaded_client.post("/api/save", json={
             "labels": {"1": "tumor"},
-            "frames": [
-                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
-            ],
+            "frames": [_frame("00001", _outline()), _frame("00002")],
         })
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "ok"
         assert (tmp_input_dir / "Annotations" / "00001_annotation.mha").exists()
 
+    def test_the_written_mask_is_the_label_image(self, loaded_client, tmp_input_dir):
+        import SimpleITK as sitk
+
+        ids = _outline(obj=3)
+        loaded_client.post("/api/save", json={
+            "labels": {"3": "x"}, "frames": [_frame("00001", ids), _frame("00002")],
+        })
+        arr = sitk.GetArrayFromImage(
+            sitk.ReadImage(str(tmp_input_dir / "Annotations" / "00001_annotation.mha"))
+        ).squeeze()
+        assert (arr[ids == 3] == 3).all()
+        assert (arr[ids == 0] == 255).all()
+
     def test_save_with_no_object_contours_is_rejected(self, loaded_client, tmp_input_dir):
         """A save that draws nothing adds nothing: the target already comes from the image."""
         resp = loaded_client.post("/api/save", json={
             "labels": {},
-            "frames": [
-                {"frame_index": "00001", "masks": ["", "", ""]},
-                {"frame_index": "00002", "masks": []},
-            ],
+            "frames": [_frame("00001"), _frame("00002")],
         })
         assert resp.status_code == 400
         assert "object contours" in resp.get_json()["error"]
         assert not (tmp_input_dir / "Annotations").exists()
-
-    def test_a_target_only_save_is_rejected(self, loaded_client):
-        """Object 0 is dropped on write, so a mask there does not make the save non-empty."""
-        resp = loaded_client.post("/api/save", json={
-            "labels": {},
-            "frames": [
-                {"frame_index": "00001", "masks": [self._make_mask_b64()]},
-            ],
-        })
-        assert resp.status_code == 400
 
     def test_a_rejected_save_leaves_an_earlier_save_intact(
         self, loaded_client, tmp_input_dir
@@ -261,28 +272,32 @@ class TestSave:
 
         resp = loaded_client.post("/api/save", json={
             "labels": {},
-            "frames": [{"frame_index": "00001", "masks": ["", ""]}],
+            "frames": [_frame("00001"), _frame("00002")],
         })
 
         assert resp.status_code == 400
         assert (annotations_dir / "00001_annotation.mha").read_bytes() == b"earlier"
 
     def test_save_no_folder_loaded(self, client):
-        resp = client.post("/api/save", json={
-            "labels": {},
-            "frames": [],
-        })
+        resp = client.post("/api/save", json={"labels": {}, "frames": []})
         assert resp.status_code == 400
 
-    def test_save_skips_unknown_frame(self, loaded_client, tmp_input_dir):
+    def test_an_unknown_frame_is_rejected(self, loaded_client, tmp_input_dir):
         resp = loaded_client.post("/api/save", json={
             "labels": {},
-            "frames": [
-                {"frame_index": "99999", "masks": ["", self._make_mask_b64()]},
-            ],
+            "frames": [_frame("99999", _outline())],
         })
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "99999" in resp.get_json()["error"]
         assert not (tmp_input_dir / "Annotations").exists()
+
+    def test_a_label_image_of_the_wrong_size_is_rejected(self, loaded_client):
+        resp = loaded_client.post("/api/save", json={
+            "labels": {},
+            "frames": [_frame("00001", np.ones((4, 4), np.uint8)), _frame("00002")],
+        })
+        assert resp.status_code == 400
+        assert "00001" in resp.get_json()["error"]
 
     def test_save_replaces_stale_annotations_from_a_previous_run(
         self, loaded_client, tmp_input_dir
@@ -298,15 +313,14 @@ class TestSave:
 
         resp = loaded_client.post("/api/save", json={
             "labels": {"1": "tumor"},
-            "frames": [
-                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
-            ],
+            "frames": [_frame("00001", _outline()), _frame("00002")],
         })
 
         assert resp.status_code == 200
         assert resp.get_json()["replaced"] == ["00285_annotation.mha"]
         assert sorted(p.name for p in annotations_dir.glob("*.mha")) == [
             "00001_annotation.mha",
+            "00002_annotation.mha",
         ]
 
     def test_save_with_one_empty_milestone_is_rejected(self, client, tmp_multi_pair_dir):
@@ -320,12 +334,12 @@ class TestSave:
         resp = client.post("/api/save", json={
             "labels": {"1": "tumor"},
             "frames": [
-                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
-                {"frame_index": "00002", "masks": ["", self._make_mask_b64()]},
-                {"frame_index": "00003", "masks": ["", ""]},
-                {"frame_index": "00004", "masks": []},
-                {"frame_index": "00005", "masks": ["", self._make_mask_b64()]},
-                {"frame_index": "00006", "masks": ["", self._make_mask_b64()]},
+                _frame("00001", _outline()),
+                _frame("00002", _outline()),
+                _frame("00003"),
+                _frame("00004"),
+                _frame("00005", _outline()),
+                _frame("00006", _outline()),
             ],
         })
         assert resp.status_code == 400
@@ -343,10 +357,7 @@ class TestSave:
         """
         resp = loaded_client.post("/api/save", json={
             "labels": {"1": "tumor"},
-            "frames": [
-                {"frame_index": "00001", "masks": ["", self._make_mask_b64()]},
-                {"frame_index": "00002", "masks": ["", self._make_mask_b64()]},
-            ],
+            "frames": [_frame("00001", _outline()), _frame("00002", _outline())],
         })
 
         assert resp.status_code == 200
@@ -354,3 +365,167 @@ class TestSave:
         assert sorted(
             p.name for p in (tmp_input_dir / "Annotations").glob("*.mha")
         ) == ["00001_annotation.mha", "00002_annotation.mha"]
+
+
+class TestSaveClosureCheck:
+    """An outline with a gap seeds the tracker with a thin line, silently, so the save
+    refuses it -- and refuses it before clearing, so an earlier good save survives."""
+
+    def _gappy(self):
+        ids = _outline()
+        ids[1, 3] = 0
+        return ids
+
+    def test_an_outline_with_a_gap_is_rejected_naming_object_and_frame(self, loaded_client):
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"1": "tumor"},
+            "frames": [_frame("00001", self._gappy()), _frame("00002", _outline())],
+        })
+        assert resp.status_code == 400
+        error = resp.get_json()["error"]
+        assert "Object 1" in error and "00001" in error and "not a closed" in error
+
+    def test_the_other_frames_closed_outline_is_not_blamed(self, loaded_client):
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"1": "tumor"},
+            "frames": [_frame("00001", self._gappy()), _frame("00002", _outline())],
+        })
+        assert "00002" not in resp.get_json()["error"]
+
+    def test_a_rejected_outline_leaves_an_earlier_save_intact(self, loaded_client, tmp_input_dir):
+        annotations_dir = tmp_input_dir / "Annotations"
+        annotations_dir.mkdir()
+        (annotations_dir / "00001_annotation.mha").write_bytes(b"earlier")
+
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"1": "tumor"},
+            "frames": [_frame("00001", self._gappy()), _frame("00002", _outline())],
+        })
+
+        assert resp.status_code == 400
+        assert (annotations_dir / "00001_annotation.mha").read_bytes() == b"earlier"
+
+    def test_one_object_crossing_another_is_caught(self, loaded_client):
+        """Later objects win where outlines cross, which can open the earlier one."""
+        ids = _outline(obj=1)
+        ids[1, 3] = 2
+        ids[2, 3] = 2
+        resp = loaded_client.post("/api/save", json={
+            "labels": {"1": "a", "2": "b"},
+            "frames": [_frame("00001", ids), _frame("00002", _outline())],
+        })
+        assert resp.status_code == 400
+        assert "Object 1" in resp.get_json()["error"]
+
+
+# --- POST /api/load-annotations ---
+
+def _save(client, frame_indices, labels=None, ids=None):
+    ids = _outline() if ids is None else ids
+    frames = [_frame(idx, ids) for idx in frame_indices]
+    resp = client.post(
+        "/api/save", json={"frames": frames, "labels": labels or {"1": "kidney"}}
+    )
+    assert resp.status_code == 200, resp.get_json()
+
+
+class TestLoadAnnotations:
+    def test_no_folder_loaded_returns_400(self, client):
+        assert client.post("/api/load-annotations").status_code == 400
+
+    def test_folder_without_annotations_returns_400(self, loaded_client):
+        resp = loaded_client.post("/api/load-annotations")
+        assert resp.status_code == 400
+        assert "no saved annotations" in resp.get_json()["error"]
+
+    def test_load_folder_reports_whether_annotations_exist(self, client, tmp_input_dir):
+        first = client.post("/api/load-folder", json={"folder_path": str(tmp_input_dir)})
+        assert first.get_json()["has_annotations"] is False
+        _save(client, ["00001", "00002"])
+        again = client.post("/api/load-folder", json={"folder_path": str(tmp_input_dir)})
+        assert again.get_json()["has_annotations"] is True
+
+    def test_returns_contours_labels_and_the_saved_frames(self, loaded_client):
+        _save(loaded_client, ["00001", "00002"], {"1": "kidney"})
+        resp = loaded_client.post("/api/load-annotations")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert [f["frame_index"] for f in data["selected"][0]] == ["00001", "00002"]
+        assert data["labels"] == {"1": "kidney"}
+        for idx in ("00001", "00002"):
+            objects = data["frames"][idx]["objects"]
+            assert list(objects) == ["1"]
+            assert len(objects["1"]) >= 6  # one flat [x, y, ...] list: a single loop
+            assert data["frames"][idx]["notes"] == []
+
+    def test_reference_is_the_label_image_with_background_as_zero(self, loaded_client):
+        _save(loaded_client, ["00001", "00002"])
+        data = loaded_client.post("/api/load-annotations").get_json()
+        ref = np.frombuffer(
+            base64.b64decode(data["frames"]["00001"]["reference"]), dtype=np.uint8
+        ).reshape(8, 8)
+        assert set(np.unique(ref)) == {0, 1}
+        assert ref[1, 1] == 1 and ref[3, 3] == 0
+
+    def test_a_saved_outline_reloads_to_exactly_the_same_pixels(self, loaded_client):
+        _save(loaded_client, ["00001", "00002"])
+        contour = loaded_client.post("/api/load-annotations").get_json()["frames"]["00001"][
+            "objects"
+        ]["1"]
+        pts = np.array(contour).reshape(-1, 2)
+        assert {(int(y), int(x)) for x, y in pts} == {
+            (int(r), int(c)) for r, c in zip(*np.nonzero(_outline()))
+        }
+
+    def test_each_object_comes_back_as_one_contour(self, loaded_client):
+        ids = _outline(obj=1)
+        ids[3:5, 3:5] = 0
+        two = _outline(obj=2, lo=2, hi=5)
+        ids[two > 0] = 2  # a smaller object nested inside the first
+        _save(loaded_client, ["00001", "00002"], {"1": "a", "2": "b"}, ids)
+        objects = loaded_client.post("/api/load-annotations").get_json()["frames"]["00001"][
+            "objects"
+        ]
+        assert sorted(objects) == ["1", "2"]
+        assert all(isinstance(v, list) and isinstance(v[0], float) for v in objects.values())
+
+    def test_switches_milestones_to_the_saved_frames(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        client.post("/api/select-milestones", json={"frame_indices": ["00003"]})
+        _save(client, ["00003", "00004"])
+        # Move away from the saved milestone, then load it back.
+        client.post("/api/select-milestones", json={"frame_indices": ["00001"]})
+        data = client.post("/api/load-annotations").get_json()
+        assert [[f["frame_index"] for f in pair] for pair in data["selected"]] == [
+            ["00003", "00004"]
+        ]
+        assert client.get("/api/frame/00003/image").status_code == 200
+
+    def test_loads_several_milestones(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        client.post("/api/select-milestones", json={"frame_indices": ["00001", "00005"]})
+        _save(client, ["00001", "00002", "00005", "00006"])
+        data = client.post("/api/load-annotations").get_json()
+        assert [pair[0]["frame_index"] for pair in data["selected"]] == ["00001", "00005"]
+
+    def test_a_lone_annotation_that_is_not_a_pair_is_refused(self, client, tmp_multi_pair_dir):
+        client.post("/api/load-folder", json={"folder_path": str(tmp_multi_pair_dir)})
+        client.post("/api/select-milestones", json={"frame_indices": ["00001"]})
+        _save(client, ["00001", "00002"])
+        # A leftover file for a frame that is not part of any saved pair.
+        stray = tmp_multi_pair_dir / "Annotations" / "00004_annotation.mha"
+        (tmp_multi_pair_dir / "Annotations" / "00001_annotation.mha").replace(stray)
+        resp = client.post("/api/load-annotations")
+        assert resp.status_code == 400
+        assert "adjacent" in resp.get_json()["error"] or "pairs" in resp.get_json()["error"]
+
+    def test_wrong_sized_annotation_is_refused(self, loaded_client, tmp_input_dir):
+        import SimpleITK as sitk
+
+        _save(loaded_client, ["00001", "00002"])
+        path = tmp_input_dir / "Annotations" / "00001_annotation.mha"
+        small = sitk.GetImageFromArray(np.full((1, 4, 4), 255, dtype=np.uint8))
+        sitk.WriteImage(small, str(path))
+        resp = loaded_client.post("/api/load-annotations")
+        assert resp.status_code == 400
+        assert "00001" in resp.get_json()["error"]

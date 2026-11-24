@@ -1,10 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
-import type Konva from "konva";
 import FrameViewer from "./FrameViewer";
-import type { FrameInfo, LineData } from "../types";
+import type { Contour, FrameInfo } from "../types";
 
 vi.mock("./AnnotationCanvas", () => ({
   default: () => <div data-testid="annotation-canvas" />,
@@ -19,25 +17,31 @@ const frame: FrameInfo = {
   height: 96,
 };
 
-function stroke(objectIndex: number): LineData {
-  return { points: [0, 0, 5, 5], stroke: "#FF0000", strokeWidth: 2, objectIndex };
+function square(objectIndex: number, lo = 10, hi = 40): Contour {
+  return {
+    objectIndex,
+    points: [lo + 0.5, lo + 0.5, hi + 0.5, lo + 0.5, hi + 0.5, hi + 0.5, lo + 0.5, hi + 0.5],
+  };
 }
 
 const defaultProps = {
   frame,
   activeColorIndex: 0,
   activeLabel: "target",
-  brushSize: 2,
-  lines: [] as LineData[],
-  onLinesChange: vi.fn(),
+  labels: Array(8).fill("") as string[],
+  contours: [] as Contour[],
+  onContoursChange: vi.fn(),
   onClearActiveObject: vi.fn(),
+  onUndo: vi.fn(),
+  canUndo: false,
+  onNotice: vi.fn(),
 };
 
 function renderViewer(overrides: Partial<typeof defaultProps> = {}) {
   const props = { ...defaultProps, ...overrides };
-  props.onLinesChange.mockClear();
   props.onClearActiveObject.mockClear();
-  return render(<FrameViewer {...props} stageRef={createRef<Konva.Stage>()} />);
+  props.onUndo.mockClear();
+  return render(<FrameViewer {...props} />);
 }
 
 describe("FrameViewer", () => {
@@ -70,21 +74,47 @@ describe("FrameViewer", () => {
     );
   });
 
-  it("disables the clear button when the active object has no strokes on this frame", () => {
-    // Object 1 has strokes, but object 0 is active.
-    renderViewer({ activeColorIndex: 0, lines: [stroke(1)] });
+  it("disables the clear button when the active object has no contour on this frame", () => {
+    renderViewer({ activeColorIndex: 2, contours: [square(1)] });
     expect(screen.getByRole("button", { name: /clear/i })).toBeDisabled();
   });
 
-  it("enables the clear button once the active object has strokes", () => {
-    renderViewer({ activeColorIndex: 1, activeLabel: "spine", lines: [stroke(1)] });
+  it("enables the clear button once the active object has a contour", () => {
+    renderViewer({ activeColorIndex: 1, activeLabel: "spine", contours: [square(1)] });
     expect(screen.getByRole("button", { name: /clear/i })).toBeEnabled();
   });
 
   it("calls onClearActiveObject when the clear button is clicked", async () => {
     const user = userEvent.setup();
-    renderViewer({ activeColorIndex: 0, lines: [stroke(0)] });
+    renderViewer({ activeColorIndex: 1, contours: [square(1)] });
     await user.click(screen.getByRole("button", { name: /clear/i }));
     expect(defaultProps.onClearActiveObject).toHaveBeenCalledTimes(1);
+  });
+
+  it("only offers Undo once there is something to undo", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderViewer({ canUndo: false });
+    expect(screen.getByRole("button", { name: /undo/i })).toBeDisabled();
+    unmount();
+
+    renderViewer({ canUndo: true });
+    await user.click(screen.getByRole("button", { name: /undo/i }));
+    expect(defaultProps.onUndo).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises no alarm for outlines that are all closed", () => {
+    renderViewer({ contours: [square(1), square(2, 60, 90)] });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("names an object whose outline another object cuts through", () => {
+    // Object 2's thin loop overwrites a pixel of object 1's top edge.
+    const cutter: Contour = { objectIndex: 2, points: [25.5, 5.5, 25.5, 15.5] };
+    const labels = Array(8).fill("");
+    labels[1] = "liver";
+    renderViewer({ contours: [square(1), cutter], labels });
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/liver/);
+    expect(alert).toHaveTextContent(/not a closed outline/);
   });
 });

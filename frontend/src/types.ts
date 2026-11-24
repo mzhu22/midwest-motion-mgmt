@@ -7,13 +7,16 @@ export interface FrameInfo {
   height: number;
 }
 
-export interface LineData {
-  points: number[];
-  stroke: string;
-  strokeWidth: number;
-  // Which annotation object this stroke belongs to: always 1..7 (an index into COLORS).
-  // Never 0 — see TARGET_OBJECT_INDEX.
+// One object's outline on one frame: a single closed polygon. Never more than one per
+// object per frame -- editing replaces a section of it rather than adding strokes, so an
+// outline cannot be left with a gap.
+export interface Contour {
+  // Which annotation object this is: always 1..7 (an index into COLORS).
+  // Never 0 -- see TARGET_OBJECT_INDEX.
   objectIndex: number;
+  // Flat [x0, y0, x1, y1, ...] in image pixel coordinates, in order around the outline.
+  // The segment from the last point back to the first is implied, not stored.
+  points: number[];
 }
 
 // Object 0 is the target. It is never drawn here: it is rendered from the dataset's

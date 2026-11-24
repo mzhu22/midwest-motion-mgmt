@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
+import numpy as np
 from flask import Blueprint, jsonify, request, Response
 
-from . import imaging
+from . import contours, imaging
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -184,6 +186,7 @@ def load_folder():
         "default_count": len(selected),
         "selected": selected,
         "first_valid_frame": first_valid_frame,
+        "has_annotations": bool(imaging.list_annotation_frames(folder_path)),
     })
 
 
@@ -227,6 +230,88 @@ def select_milestones_route():
     return jsonify({"selected": selected})
 
 
+@api.route("/load-annotations", methods=["POST"])
+def load_annotations():
+    """Read a previous save back as editable strokes, and switch the milestones to the
+    frames it was saved on.
+
+    A save always writes a full sagittal/coronal pair per milestone, so the frames in
+    Annotations/ must be exactly the frames of the valid pairs around them. Anything
+    else (a hand-edited folder, a leftover file) is refused rather than guessed at:
+    the strokes would land on frames the tracker is not seeding.
+    """
+    folder_path = _state.get("folder_path")
+    ordered = _state.get("ordered")
+    if not folder_path or ordered is None:
+        return jsonify({"error": "No folder loaded"}), 400
+    image_map, target_map = _state["image_map"], _state["target_map"]
+
+    saved = imaging.list_annotation_frames(folder_path)
+    if not saved:
+        return jsonify({"error": "This folder has no saved annotations to load."}), 400
+    unknown = [idx for idx in saved if idx not in image_map]
+    if unknown:
+        return jsonify({
+            "error": f"Saved annotations exist for frames with no image: {', '.join(unknown)}."
+        }), 400
+
+    try:
+        sagittal = [
+            idx
+            for idx in saved
+            if imaging._read_plane(str(Path(folder_path) / "TwoDImages" / image_map[idx]))
+            == "sagittal"
+        ]
+        positions = [imaging.position_near(ordered, idx) for idx in sagittal]
+        selected = _select_pairs(folder_path, ordered, image_map, target_map, positions)
+    except imaging.PlaneDetectionError as exc:
+        return jsonify({"error": f"Saved annotations do not form valid pairs: {exc}"}), 400
+
+    pair_frames = [f["frame_index"] for pair in selected for f in pair]
+    if sorted(pair_frames, key=int) != saved:
+        return jsonify({
+            "error": "Saved annotations are not a set of adjacent sagittal/coronal pairs. "
+            f"Annotated frames: {', '.join(saved)}. Pairs found: {', '.join(sorted(pair_frames, key=int))}."
+        }), 400
+
+    for pair in selected:
+        _add_dimensions(folder_path, pair)
+
+    frames_out: dict[str, dict] = {}
+    for frame in (f for pair in selected for f in pair):
+        idx = frame["frame_index"]
+        arr = imaging.read_annotation(folder_path, idx)
+        if arr.shape != (frame["height"], frame["width"]):
+            return jsonify({
+                "error": f"Annotation for frame {idx} is {arr.shape[1]}x{arr.shape[0]} but the "
+                f"image is {frame['width']}x{frame['height']}."
+            }), 400
+        # 0 = no object. The target id is never written, and 255 is the file's background.
+        reference = np.where(arr == 255, 0, arr).astype(np.uint8)
+        objects: dict[str, list[float]] = {}
+        notes: list[str] = []
+        for obj_id in np.unique(reference):
+            if obj_id == imaging.TARGET_OBJECT_ID:
+                continue
+            loaded = contours.mask_to_contour(reference == obj_id)
+            if loaded is None:
+                continue
+            objects[str(obj_id)] = loaded.points
+            notes += [f"object {obj_id}: {note}" for note in loaded.notes]
+        frames_out[idx] = {
+            "objects": objects,
+            "notes": notes,
+            "reference": base64.b64encode(reference.tobytes()).decode("ascii"),
+        }
+
+    _state["frames"] = {f["frame_index"]: f for pair in selected for f in pair}
+    return jsonify({
+        "selected": selected,
+        "frames": frames_out,
+        "labels": imaging.read_labels(folder_path),
+    })
+
+
 @api.route("/frame/<frame_index>/image")
 def frame_image(frame_index: str):
     frame = _state.get("frames", {}).get(frame_index)
@@ -253,6 +338,12 @@ def frame_target_contour(frame_index: str):
 
 @api.route("/save", methods=["POST"])
 def save():
+    """Write the annotation pair(s). Each frame arrives as `object_ids`: its finished
+    label image, one byte per pixel (0 = no object, 1-7 = that object's outline).
+
+    Everything is validated before `clear_annotations` runs, so a rejected save can
+    never destroy an earlier good one.
+    """
     data = request.get_json()
     folder = _state.get("folder_path")
     if not folder:
@@ -261,35 +352,38 @@ def save():
     labels = data.get("labels", {})
     frames_data = data.get("frames", [])
 
-    # Refuse a save where any milestone has nothing drawn, and refuse it *before*
-    # clearing: milestones exist to give the tracker several correction points spaced
-    # across the series, so one left blank would seed nothing there and just fall back
-    # to the target contour alone — the same as if the whole save were empty, just
-    # localized to that milestone. Letting it through would also destroy a good earlier
-    # save. Object 0 is the target and is dropped on write, so it does not count.
-    # frames_data arrives in milestone pairs (the frontend's frames[2m], frames[2m+1]
-    # convention — see App.tsx's milestoneIndex comment).
-    def _pair_has_objects(pair: list[dict]) -> bool:
-        return any(
-            mask
-            for frame_data in pair
-            for mask in frame_data.get("masks", [])[imaging.TARGET_OBJECT_ID + 1 :]
-        )
+    unknown = [fd.get("frame_index", "?") for fd in frames_data if fd.get("frame_index") not in _state["frames"]]
+    if unknown:
+        return jsonify({"error": f"Unknown frame(s): {', '.join(map(str, unknown))}"}), 400
 
-    milestones = [frames_data[i : i + 2] for i in range(0, len(frames_data), 2)]
-    empty_milestones = [pair for pair in milestones if not _pair_has_objects(pair)]
+    decoded: list[tuple[dict, np.ndarray]] = []
+    for frame_data in frames_data:
+        frame = _state["frames"][frame_data["frame_index"]]
+        try:
+            ids = imaging.decode_object_ids(
+                frame_data.get("object_ids", ""), frame["width"], frame["height"]
+            )
+        except ValueError as exc:
+            return jsonify({"error": f"Frame {frame['frame_index']}: {exc}"}), 400
+        decoded.append((frame, ids))
 
-    if len(empty_milestones) == len(milestones):
+    # Refuse a save where any milestone has nothing drawn: milestones exist to give the
+    # tracker several correction points spaced across the series, so one left blank
+    # would seed nothing there and just fall back to the target contour alone. Object
+    # 0 is the target (and "no object"), so it does not count. frames_data arrives in
+    # milestone pairs (the frontend's frames[2m], frames[2m+1] convention).
+    pairs = [decoded[i : i + 2] for i in range(0, len(decoded), 2)]
+    empty_pairs = [pair for pair in pairs if not any(ids.any() for _, ids in pair)]
+
+    if len(empty_pairs) == len(pairs):
         return jsonify(
             {
                 "error": "No object contours were drawn. The target contour is saved "
                 "from the original image automatically; draw at least one other object."
             }
         ), 400
-    if empty_milestones:
-        frame_list = ", ".join(
-            pair[0].get("frame_index", "?") for pair in empty_milestones
-        )
+    if empty_pairs:
+        frame_list = ", ".join(pair[0][0]["frame_index"] for pair in empty_pairs)
         return jsonify(
             {
                 "error": "Every milestone needs at least one drawn object. Empty "
@@ -297,17 +391,24 @@ def save():
             }
         ), 400
 
+    # An outline with a gap seeds the tracker with a thin line instead of a region, and
+    # nothing downstream complains. Check the pixels as written, not the strokes behind
+    # them: that also catches one object's outline overwriting another's where they cross.
+    problems = [
+        f"Object {obj_id} on frame {frame['frame_index']} ({frame['plane']}) is not a "
+        "closed outline (another object's outline may cross it)"
+        for frame, ids in decoded
+        for obj_id in imaging.find_unclosed_objects(ids)
+    ]
+    if problems:
+        return jsonify({"error": ". ".join(problems)}), 400
+
     # Clear once up front, not per frame: a save writes a full sagittal/coronal pair
     # and stale masks from an earlier run would mis-seed tracking downstream.
     removed = imaging.clear_annotations(folder)
 
-    for frame_data in frames_data:
-        idx = frame_data["frame_index"]
-        masks = frame_data.get("masks", [])
-        frame = _state["frames"].get(idx)
-        if not frame:
-            continue
-        imaging.save_annotations(folder, idx, masks, labels, frame["image_file"])
+    for frame, ids in decoded:
+        imaging.save_annotations(folder, frame["frame_index"], ids, labels, frame["image_file"])
 
     annotations_dir = str(Path(folder) / "Annotations")
     return jsonify({"status": "ok", "path": annotations_dir, "replaced": removed})

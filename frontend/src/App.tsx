@@ -1,18 +1,29 @@
-import { useState, useRef, useCallback } from "react";
-import type Konva from "konva";
+import { useState, useCallback } from "react";
 import FolderInput from "./components/FolderInput";
 import FrameViewer from "./components/FrameViewer";
 import LabelPanel from "./components/LabelPanel";
 import LoadingOverlay from "./components/LoadingOverlay";
 import MilestoneNav from "./components/MilestoneNav";
-import type { FrameInfo, LineData } from "./types";
-import { exportMasksForFrame } from "./exportMasks";
-import { isEnclosed } from "./validation";
+import type { Contour, FrameInfo } from "./types";
+import { TARGET_OBJECT_INDEX } from "./types";
+import { analyzeFrame, rasterizeContours } from "./contour";
+import { decodeIds, encodeIds } from "./idsCodec";
+import {
+  compareObjectIds,
+  contoursFromLoaded,
+  describeMismatch,
+} from "./loadAnnotations";
+import type { LoadedFrame } from "./loadAnnotations";
 
-// A ref-shaped object with the same {current} contract useRef returns, so each
-// frame's Stage can be looked up by frame_index instead of positional array index —
-// the frame count is no longer fixed at 2, so a fixed-size ref array cannot key them.
-type StageRef = { current: Konva.Stage | null };
+// How many changes per frame Undo remembers.
+const UNDO_DEPTH = 50;
+
+// Each frame's contours, and for each the earlier versions Undo can step back to. One
+// piece of state so an edit and its history always change together.
+interface Edits {
+  contours: Record<string, Contour[]>;
+  history: Record<string, Contour[][]>;
+}
 
 export default function App() {
   const [frames, setFrames] = useState<FrameInfo[]>([]);
@@ -24,6 +35,10 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [replacedCount, setReplacedCount] = useState(0);
+  // Whether the loaded folder already holds a save, from /api/load-folder.
+  const [hasAnnotations, setHasAnnotations] = useState(false);
+  const [loadingAnnotations, setLoadingAnnotations] = useState(false);
+  const [loadNotice, setLoadNotice] = useState("");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   // The earliest frame that can anchor a valid sagittal/coronal pair, from
@@ -33,26 +48,41 @@ export default function App() {
   // Index 0 is reserved for the target, which is never drawn here, so it stays empty.
   const [labels, setLabels] = useState<string[]>(Array(8).fill(""));
   const [activeColorIndex, setActiveColorIndex] = useState(1);
-  const brushSize = 2;
-  const [frameLines, setFrameLines] = useState<Record<string, LineData[]>>({});
+  const [edits, setEdits] = useState<Edits>({ contours: {}, history: {} });
+  const frameContours = edits.contours;
+
+  // Replaces one frame's contours, remembering the version being replaced for Undo.
+  const changeContours = useCallback((frameIndex: string, next: Contour[]) => {
+    setEdits((prev) => ({
+      contours: { ...prev.contours, [frameIndex]: next },
+      history: {
+        ...prev.history,
+        [frameIndex]: [...(prev.history[frameIndex] ?? []), prev.contours[frameIndex] ?? []].slice(
+          -UNDO_DEPTH
+        ),
+      },
+    }));
+  }, []);
+
+  const undoContours = useCallback((frameIndex: string) => {
+    setEdits((prev) => {
+      const past = prev.history[frameIndex] ?? [];
+      if (past.length === 0) return prev;
+      return {
+        contours: { ...prev.contours, [frameIndex]: past[past.length - 1]! },
+        history: { ...prev.history, [frameIndex]: past.slice(0, -1) },
+      };
+    });
+  }, []);
 
   const milestoneCount = frames.length / 2;
   const currentPair = frames.slice(milestoneIndex * 2, milestoneIndex * 2 + 2);
-
-  const stageRefsMap = useRef(new Map<string, StageRef>());
-  const getStageRef = useCallback((frameIndex: string): StageRef => {
-    let ref = stageRefsMap.current.get(frameIndex);
-    if (!ref) {
-      ref = { current: null };
-      stageRefsMap.current.set(frameIndex, ref);
-    }
-    return ref;
-  }, []);
 
   const handleLoad = useCallback(async (path: string) => {
     setLoading(true);
     setError("");
     setWarning("");
+    setLoadNotice("");
     try {
       const res = await fetch("/api/load-folder", {
         method: "POST",
@@ -66,12 +96,73 @@ export default function App() {
       }
       setFrames(data.selected.flat());
       setMilestoneIndex(0);
-      setFrameLines({});
+      setEdits({ contours: {}, history: {} });
       setFirstValidFrame(data.first_valid_frame ?? null);
+      setHasAnnotations(Boolean(data.has_annotations));
+      setSavedPath(null);
+      setReplacedCount(0);
     } catch (e) {
       setError("Failed to connect to backend");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleLoadAnnotations = useCallback(async () => {
+    setLoadingAnnotations(true);
+    setError("");
+    setWarning("");
+    setLoadNotice("");
+    try {
+      const res = await fetch("/api/load-annotations", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to load annotations");
+        return;
+      }
+      const loaded: Record<string, LoadedFrame> = data.frames;
+      const selected: FrameInfo[] = data.selected.flat();
+      const nextContours: Record<string, Contour[]> = {};
+      const problems: string[] = [];
+      const total = { total: 0, differing: 0, outlinesIdentical: true };
+      for (const frame of selected) {
+        const saved = loaded[frame.frame_index];
+        if (!saved) continue;
+        const contours = contoursFromLoaded(saved.objects);
+        nextContours[frame.frame_index] = contours;
+        saved.notes.forEach((note) => problems.push(`Frame ${frame.frame_index}, ${note}`));
+
+        // The same rasterization a save would use, against the label image on disk.
+        const redrawn = rasterizeContours(frame.width, frame.height, contours);
+        const result = compareObjectIds(
+          decodeIds(saved.reference),
+          redrawn,
+          frame.width,
+          frame.height
+        );
+        total.total += result.total;
+        total.differing += result.differing;
+        total.outlinesIdentical &&= result.outlinesIdentical;
+      }
+      const nextLabels = Array(8).fill("");
+      for (const [id, label] of Object.entries<string>(data.labels ?? {})) {
+        const i = Number(id);
+        if (Number.isInteger(i) && i > TARGET_OBJECT_INDEX && i < nextLabels.length) {
+          nextLabels[i] = label;
+        }
+      }
+
+      setFrames(selected);
+      setMilestoneIndex(0);
+      setEdits({ contours: nextContours, history: {} });
+      setLabels(nextLabels);
+      setSavedPath(null);
+      setReplacedCount(0);
+      setLoadNotice([describeMismatch(total), ...problems].filter(Boolean).join(" "));
+    } catch (e) {
+      setError("Failed to connect to backend");
+    } finally {
+      setLoadingAnnotations(false);
     }
   }, []);
 
@@ -148,17 +239,6 @@ export default function App() {
     [frames, milestoneIndex, firstValidFrame]
   );
 
-  const exportMasksFor = useCallback(
-    (frameIndex: string): string[] => {
-      const frame = frames.find((f) => f.frame_index === frameIndex);
-      const stage = stageRefsMap.current.get(frameIndex)?.current;
-      if (!frame || !stage) return Array(8).fill("");
-      const lines = frameLines[frameIndex] ?? [];
-      return exportMasksForFrame(stage, frame, lines);
-    },
-    [frames, frameLines]
-  );
-
   const handleSave = useCallback(async () => {
     setError("");
 
@@ -174,7 +254,7 @@ export default function App() {
     for (let m = 0; m < frames.length; m += 2) {
       const pair = frames.slice(m, m + 2);
       const pairDrewSomething = pair.some(
-        (frame) => (frameLines[frame.frame_index] ?? []).length > 0
+        (frame) => (frameContours[frame.frame_index] ?? []).length > 0
       );
       if (!pairDrewSomething) {
         emptyMilestones.push(`Milestone ${m / 2 + 1} (sagittal frame ${frames[m]!.frame_index})`);
@@ -195,18 +275,20 @@ export default function App() {
       return;
     }
 
+    // Judge the pixels that will be written, not the strokes behind them. Each outline
+    // is closed by construction, so what can fail here is one object's outline crossing
+    // another's and overwriting part of it.
+    const analyzed = frames.map((frame) => ({
+      frame,
+      ...analyzeFrame(frame.width, frame.height, frameContours[frame.frame_index] ?? []),
+    }));
     const usedObjectIndices = new Set<number>();
-    for (const frame of frames) {
-      const lines = frameLines[frame.frame_index] ?? [];
-      const objIndices = new Set(lines.map((l) => l.objectIndex));
-      for (const idx of objIndices) {
-        usedObjectIndices.add(idx);
-        const objStrokes = lines.filter((l) => l.objectIndex === idx);
-        if (!isEnclosed(objStrokes)) {
-          validationErrors.push(
-            `Object ${idx} on ${frame.frame_index} (${frame.plane}) does not form an enclosed shape`
-          );
-        }
+    for (const { frame, ids, unclosed } of analyzed) {
+      ids.forEach((id) => id && usedObjectIndices.add(id));
+      for (const idx of unclosed) {
+        validationErrors.push(
+          `Object ${idx} on ${frame.frame_index} (${frame.plane}) is not a closed outline`
+        );
       }
     }
     for (const idx of usedObjectIndices) {
@@ -222,9 +304,9 @@ export default function App() {
 
     setSaving(true);
     try {
-      const framesData = frames.map((frame) => ({
+      const framesData = analyzed.map(({ frame, ids }) => ({
         frame_index: frame.frame_index,
-        masks: exportMasksFor(frame.frame_index),
+        object_ids: encodeIds(ids),
       }));
 
       const labelMap: Record<string, string> = {};
@@ -243,13 +325,14 @@ export default function App() {
       } else {
         setSavedPath(data.path ?? null);
         setReplacedCount(data.replaced?.length ?? 0);
+        setHasAnnotations(true);
       }
     } catch (e) {
       setError("Failed to save");
     } finally {
       setSaving(false);
     }
-  }, [frames, labels, exportMasksFor]);
+  }, [frames, labels, frameContours]);
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 20, maxWidth: 1400, margin: "0 auto" }}>
@@ -276,11 +359,44 @@ export default function App() {
             1. You can adjust the number of milestone frames to annotate, and which frame represents each milestone. By default, milestone frames are distributed evenly across the video. Try to capture a range of motion for each object to improve tracking.
           </p>
           <p style={{ margin: "0 0 6px" }}>
-            2. The target is shown in <strong style={{ color: "#FF1493" }}>pink</strong>. Draw one or more <strong>additional objects</strong>: select an object on the left, then draw a contour over it. Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. To fix a mistake, click <strong>✕ Clear</strong> above that frame.
+            2. The target is shown in <strong style={{ color: "#FF1493" }}>pink</strong>. Draw one or more <strong>additional objects</strong>: select an object on the left, then draw <strong>one stroke</strong> around it. Try to follow existing edges and high-contrast lines in the image, which will make it easier for the model to track the object. To <strong>edit</strong> an outline, select the object and draw a new stroke that <strong>starts and ends on the outline</strong>. Use <strong>↶ Undo</strong> to take back a change, or <strong>✕ Clear</strong> to start over.
+          </p>
+          <p style={{ margin: "0 0 6px" }}>
+            3. Use <strong>↶ Undo</strong> to take back a change, or <strong>✕ Clear</strong> to start over.
           </p>
           <p style={{ margin: 0 }}>
-            3. Enter a <strong>label</strong> for each object you draw. When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
+            4. Enter a <strong>label</strong> for each object you draw. When complete, click <strong>Save Annotations</strong>. Files are saved in the same folder as the images, under the "Annotations" subfolder.
           </p>
+        </div>
+      )}
+
+      {hasAnnotations && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: "10px 14px",
+            background: "#fffbeb",
+            border: "1px solid #fde68a",
+            borderRadius: 6,
+            fontSize: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 240 }}>
+            This folder has saved annotations. You can load them to edit the existing annotations.
+          </span>
+          <LoadingOverlay active={loadingAnnotations} wrapperStyle={{ display: "inline-block" }}>
+            <button
+              onClick={handleLoadAnnotations}
+              disabled={loadingAnnotations || loading}
+              style={{ padding: "6px 16px", fontSize: 14 }}
+            >
+              Load existing annotations
+            </button>
+          </LoadingOverlay>
         </div>
       )}
 
@@ -300,6 +416,10 @@ export default function App() {
         <div style={{ color: "#dc2626", marginBottom: 12, fontSize: 14 }}>
           {error}
         </div>
+      )}
+
+      {!error && loadNotice && (
+        <div style={{ color: "#374151", marginBottom: 12, fontSize: 14 }}>{loadNotice}</div>
       )}
 
       {!error && warning && (
@@ -325,9 +445,8 @@ export default function App() {
             wrapperStyle={{ display: "flex", flexWrap: "wrap", gap: 20, flex: 1, minWidth: 0 }}
           >
             {frames.map((frame, i) => {
-              // Every milestone's frame stays mounted for the whole session — even
-              // ones not currently shown — because handleSave exports masks from
-              // each frame's Konva stage, which requires the stage to exist.
+              // Every milestone's frame stays mounted for the whole session, even ones
+              // not currently shown, so each keeps its zoom and pan.
               const isCurrentMilestone = Math.floor(i / 2) === milestoneIndex;
               return (
                 <div
@@ -338,23 +457,20 @@ export default function App() {
                     frame={frame}
                     activeColorIndex={activeColorIndex}
                     activeLabel={labels[activeColorIndex]?.trim() || `Object ${activeColorIndex}`}
-                    brushSize={brushSize}
-                    lines={frameLines[frame.frame_index] ?? []}
-                    onLinesChange={(newLines) =>
-                      setFrameLines((prev) => ({
-                        ...prev,
-                        [frame.frame_index]: newLines,
-                      }))
-                    }
+                    labels={labels}
+                    contours={frameContours[frame.frame_index] ?? []}
+                    onContoursChange={(next) => changeContours(frame.frame_index, next)}
                     onClearActiveObject={() =>
-                      setFrameLines((prev) => ({
-                        ...prev,
-                        [frame.frame_index]: (prev[frame.frame_index] ?? []).filter(
-                          (l) => l.objectIndex !== activeColorIndex
-                        ),
-                      }))
+                      changeContours(
+                        frame.frame_index,
+                        (frameContours[frame.frame_index] ?? []).filter(
+                          (c) => c.objectIndex !== activeColorIndex
+                        )
+                      )
                     }
-                    stageRef={getStageRef(frame.frame_index)}
+                    onUndo={() => undoContours(frame.frame_index)}
+                    canUndo={(edits.history[frame.frame_index] ?? []).length > 0}
+                    onNotice={setWarning}
                   />
                 </div>
               );

@@ -1,9 +1,10 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { Stage, Layer, Line, Image as KonvaImage } from "react-konva";
 import type Konva from "konva";
-import type { LineData } from "../types";
+import type { Contour } from "../types";
 import { COLORS } from "../types";
-import { rasterizeExactPixels } from "../pixelPreview";
+import { commitStroke } from "../contour";
+import { idsToCanvas } from "../pixelPreview";
 import { btnStyle } from "./buttonStyle";
 import LoadingOverlay from "./LoadingOverlay";
 
@@ -12,10 +13,14 @@ interface Props {
   width: number;
   height: number;
   activeColorIndex: number;
-  brushSize: number;
-  lines: LineData[];
-  onLinesChange: (lines: LineData[]) => void;
-  stageRef: React.RefObject<Konva.Stage>;
+  // What to call the active object in messages ("liver", or "Object 2" if unnamed).
+  activeLabel: string;
+  contours: Contour[];
+  // One object id per pixel for `contours`, exactly as it will be saved.
+  ids: Uint8Array;
+  onContoursChange: (contours: Contour[]) => void;
+  // A stroke that changed nothing explains why; "" clears the previous explanation.
+  onNotice: (message: string) => void;
 }
 
 function useImage(src: string): HTMLImageElement | null {
@@ -38,43 +43,36 @@ export default function AnnotationCanvas({
   width,
   height,
   activeColorIndex,
-  brushSize,
-  lines,
-  onLinesChange,
-  stageRef,
+  activeLabel,
+  contours,
+  ids,
+  onContoursChange,
+  onNotice,
 }: Props) {
+  const stageRef = useRef<Konva.Stage>(null);
   const isDrawing = useRef(false);
+  // The stroke being dragged, in image coordinates. A ref as well as state: mouse
+  // events append to the ref (always current), the state only drives the redraw.
+  const strokeRef = useRef<number[]>([]);
+  const [stroke, setStroke] = useState<number[]>([]);
   const isPanning = useRef(false);
   const lastPanPos = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [transform, setTransform] = useState({ zoom: 1, x: 0, y: 0 });
   const [panMode, setPanMode] = useState(false);
-  // Whether a stroke is actively being dragged, kept as state (not just the
-  // isDrawing ref below) so it can gate which layer renders and when the pixel
-  // preview is recomputed.
-  const [drawingActive, setDrawingActive] = useState(false);
-  // The exact pixels that would be saved for the strokes drawn so far -- see
-  // pixelPreview.ts. Shown once a stroke finishes, in place of the smoothed,
-  // anti-aliased line, so the user can review pixelwise accuracy.
-  const [pixelPreview, setPixelPreview] = useState<HTMLCanvasElement | null>(null);
-
   const baseImage = useImage(`/api/frame/${frameIndex}/image`);
   const contourImage = useImage(`/api/frame/${frameIndex}/target-contour`);
 
   const displayW = width * DISPLAY_SCALE;
   const displayH = height * DISPLAY_SCALE;
 
-  // Recomputes once a stroke finishes (drawingActive flips false) and whenever
-  // lines change from outside a drag (e.g. Clear, or a frame swap). Skipped while
-  // drawingActive is true so a drag's own mousemove-driven line updates don't each
-  // trigger a rasterize pass.
-  useEffect(() => {
-    if (drawingActive) return;
-    const stage = stageRef.current;
-    if (!stage) return;
-    setPixelPreview(rasterizeExactPixels(stage, width, height, lines));
-  }, [lines, drawingActive, width, height, stageRef]);
+  // The exact pixels that will be saved for the contours drawn so far -- see
+  // pixelPreview.ts. What is on screen is what gets written.
+  const pixelPreview = useMemo(
+    () => idsToCanvas(ids, width, height),
+    [ids, width, height]
+  );
 
   // Prevent native scroll when wheeling over the canvas
   useEffect(() => {
@@ -130,59 +128,66 @@ export default function AnnotationCanvas({
       }
       if (e.evt.button !== 0) return;
 
+      const stage = e.target.getStage();
+      const pos = stage?.getPointerPosition();
+      if (!pos || !stage) return;
+
       isDrawing.current = true;
-      setDrawingActive(true);
-      const stage = e.target.getStage();
-      const pos = stage?.getPointerPosition();
-      if (!pos || !stage) return;
-
       const { x, y } = toImageCoords(pos, stage);
-      const newLine: LineData = {
-        points: [x, y],
-        stroke: COLORS[activeColorIndex]!,
-        strokeWidth: brushSize,
-        objectIndex: activeColorIndex,
-      };
-      onLinesChange([...lines, newLine]);
+      strokeRef.current = [x, y];
+      setStroke(strokeRef.current);
     },
-    [lines, onLinesChange, activeColorIndex, brushSize, panMode]
+    [panMode]
   );
 
-  const handleMouseMove = useCallback(
-    (e: Konva.KonvaEventObject<MouseEvent>) => {
-      if (isPanning.current) {
-        const dx = e.evt.clientX - lastPanPos.current.x;
-        const dy = e.evt.clientY - lastPanPos.current.y;
-        lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY };
-        setTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-        return;
-      }
+  const handleMouseMove = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isPanning.current) {
+      const dx = e.evt.clientX - lastPanPos.current.x;
+      const dy = e.evt.clientY - lastPanPos.current.y;
+      lastPanPos.current = { x: e.evt.clientX, y: e.evt.clientY };
+      setTransform((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+      return;
+    }
 
-      if (!isDrawing.current) return;
-      const stage = e.target.getStage();
-      const pos = stage?.getPointerPosition();
-      if (!pos || !stage) return;
+    if (!isDrawing.current) return;
+    const stage = e.target.getStage();
+    const pos = stage?.getPointerPosition();
+    if (!pos || !stage) return;
 
-      const { x, y } = toImageCoords(pos, stage);
-      const updated = [...lines];
-      const last = updated[updated.length - 1];
-      if (!last) return;
-      last.points = [...last.points, x, y];
-      onLinesChange(updated);
-    },
-    [lines, onLinesChange]
-  );
-
-  const handleMouseUp = useCallback(() => {
-    isDrawing.current = false;
-    isPanning.current = false;
-    setDrawingActive(false);
+    const { x, y } = toImageCoords(pos, stage);
+    strokeRef.current = [...strokeRef.current, x, y];
+    setStroke(strokeRef.current);
   }, []);
 
-  // While a stroke is in progress, show the live smoothed line for responsiveness;
-  // once it's done, swap to the rasterized preview so review reflects exactly what
-  // gets saved.
-  const showPixelPreview = !drawingActive && pixelPreview !== null;
+  // A finished stroke either creates the active object's outline or reshapes it; see
+  // commitStroke. Whatever it decides, the stroke itself is not kept.
+  const handleMouseUp = useCallback(() => {
+    isPanning.current = false;
+    if (!isDrawing.current) return;
+    isDrawing.current = false;
+
+    const finished = strokeRef.current;
+    strokeRef.current = [];
+    setStroke([]);
+
+    const result = commitStroke({
+      existing: contours.find((c) => c.objectIndex === activeColorIndex),
+      objectIndex: activeColorIndex,
+      stroke: finished,
+      width,
+      height,
+      name: activeLabel,
+    });
+    if (!result.ok) {
+      if (result.reason) onNotice(result.reason);
+      return;
+    }
+    onNotice("");
+    onContoursChange([
+      ...contours.filter((c) => c.objectIndex !== activeColorIndex),
+      result.contour,
+    ]);
+  }, [contours, activeColorIndex, activeLabel, width, height, onContoursChange, onNotice]);
 
   return (
     <div ref={containerRef} style={{ display: "inline-block" }}>
@@ -245,32 +250,18 @@ export default function AnnotationCanvas({
               />
             )}
           </Layer>
-          <Layer>
-            {lines.map((line, i) => (
+          <Layer listening={false}>
+            <KonvaImage image={pixelPreview} width={displayW} height={displayH} />
+          </Layer>
+          <Layer listening={false}>
+            {stroke.length >= 4 && (
               <Line
-                key={i}
-                points={line.points.map((p) => p * DISPLAY_SCALE)}
-                stroke={line.stroke}
-                strokeWidth={line.strokeWidth * DISPLAY_SCALE}
-                tension={0.5}
+                points={stroke.map((p) => p * DISPLAY_SCALE)}
+                stroke={COLORS[activeColorIndex]}
+                strokeWidth={DISPLAY_SCALE}
                 lineCap="round"
                 lineJoin="round"
-                opacity={0.6}
-                // Hidden (not removed) once a stroke finishes and the exact-pixel
-                // preview below takes over -- rasterizeExactPixels needs these nodes
-                // present and force-toggles their visibility itself while rasterizing,
-                // then restores whatever this prop currently says.
-                visible={!showPixelPreview}
-              />
-            ))}
-          </Layer>
-          <Layer>
-            {showPixelPreview && pixelPreview && (
-              <KonvaImage
-                image={pixelPreview}
-                width={displayW}
-                height={displayH}
-                listening={false}
+                opacity={0.8}
               />
             )}
           </Layer>

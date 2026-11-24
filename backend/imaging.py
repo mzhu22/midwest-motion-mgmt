@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import shutil
 from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
 from PIL import Image
-from scipy.ndimage import binary_erosion
+from scipy.ndimage import binary_erosion, binary_fill_holes, label
 
 # Indexed by the anatomical axis the slice normal points along: x = L/R, y = A/P, z = S/I.
 _PLANE_BY_NORMAL_AXIS = ("sagittal", "coronal", "axial")
@@ -331,13 +332,77 @@ def clear_annotations(input_dir: str) -> list[str]:
     return removed
 
 
+# Highest drawable object id; ids 1..MAX_OBJECT_ID are user objects (0 is the target).
+MAX_OBJECT_ID = 7
+
+
+def decode_object_ids(b64: str, width: int, height: int) -> np.ndarray:
+    """Decode a frame's label image as sent by the frontend: one byte per pixel, row-major,
+    0 = no object, 1..MAX_OBJECT_ID = that object's outline.
+
+    Raises ValueError for anything that is not exactly that, so a bad client cannot
+    write a mask the tracker would misread.
+    """
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("object ids are not valid base64") from exc
+    if len(raw) != width * height:
+        raise ValueError(
+            f"object ids hold {len(raw)} pixels but the frame is {width}x{height} "
+            f"({width * height})"
+        )
+    ids = np.frombuffer(raw, dtype=np.uint8).reshape(height, width)
+    if ids.max(initial=0) > MAX_OBJECT_ID:
+        raise ValueError(f"object ids go above {MAX_OBJECT_ID}")
+    return ids
+
+
+def find_unclosed_objects(ids: np.ndarray) -> list[int]:
+    """Object ids whose outline is not one closed loop.
+
+    An outline is good when it encloses an area and is a single 8-connected piece.
+
+    Enclosing an area is the test mr-linac-iowa effectively applies: it reads each object
+    as `binary_fill_holes(arr == obj_id)`, which floods the background 4-connected from
+    the border and keeps whatever it cannot reach. An outline with a gap lets the flood
+    in, the fill adds nothing, and the tracker is seeded with a thin line instead of a
+    region -- silently.
+
+    Being one piece catches what that test alone lets through: another object's outline
+    crossing this one cuts it into parts, and if any part still happens to enclose a
+    pocket the fill succeeds -- on a fragment of the object. The tool draws each object
+    as one polygon, so more than one piece always means something cut it.
+
+    Both are judged on the pixels as written, not the strokes behind them, so a gap is
+    caught whatever caused it, including one object's outline overwriting another's
+    where they cross.
+    """
+    unclosed = []
+    for obj_id in np.unique(ids):
+        if obj_id == TARGET_OBJECT_ID:
+            continue
+        mask = ids == obj_id
+        encloses = binary_fill_holes(mask).sum() > mask.sum()
+        one_piece = label(mask, structure=np.ones((3, 3)))[1] == 1
+        if not (encloses and one_piece):
+            unclosed.append(int(obj_id))
+    return unclosed
+
+
 def save_annotations(
     input_dir: str,
     frame_index: str,
-    masks_b64: list[str],
+    ids: np.ndarray,
     labels: dict[str, str],
     image_file: str,
 ) -> None:
+    """Write one frame's annotation: `ids` is the (H, W) label image from
+    decode_object_ids, 0 = no object. Written as 255 background, object id elsewhere.
+
+    Id 0 is the target and is never written: mr-linac-iowa reads it from
+    TwoDImages/TargetStructure/, so a traced copy here would only shadow the real one.
+    """
     images_dir = Path(input_dir) / "TwoDImages"
     annotations_dir = Path(input_dir) / "Annotations"
     annotations_dir.mkdir(exist_ok=True)
@@ -345,20 +410,12 @@ def save_annotations(
     original = sitk.ReadImage(str(images_dir / image_file))
     orig_arr = sitk.GetArrayFromImage(original).squeeze()
     h, w = orig_arr.shape
+    if ids.shape != (h, w):
+        raise ValueError(f"object ids are {ids.shape[1]}x{ids.shape[0]}, image is {w}x{h}")
 
     output = np.full((h, w), 255, dtype=np.uint8)
-
-    for i, b64 in enumerate(masks_b64):
-        # Object 0 is the target and is never hand-drawn. mr-linac-iowa reads it from
-        # TwoDImages/TargetStructure/ for the frame it seeds on, so writing a traced
-        # copy here would only give the tracker a worse version of the same contour.
-        if i == TARGET_OBJECT_ID or not b64:
-            continue
-        png_bytes = base64.b64decode(b64)
-        mask_img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-        mask_arr = np.array(mask_img.resize((w, h), Image.NEAREST))
-        alpha = mask_arr[:, :, 3]
-        output[alpha > 128] = i
+    drawn = ids != TARGET_OBJECT_ID
+    output[drawn] = ids[drawn]
 
     # Write 3D to match the source frame's shape, so the direction cosines survive:
     # a 2D MHA cannot express a slice normal, and without one the saved annotation
@@ -371,9 +428,34 @@ def save_annotations(
     out_path = annotations_dir / f"{frame_index}_annotation.mha"
     sitk.WriteImage(out_sitk, str(out_path))
 
-    import json
-
     used_labels = {k: v for k, v in labels.items() if v}
     labels_path = annotations_dir / "labels.json"
     with open(labels_path, "w") as f:
         json.dump(used_labels, f, indent=2)
+
+
+def list_annotation_frames(input_dir: str) -> list[str]:
+    """Frame indices that have a saved annotation, ascending."""
+    annotations_dir = Path(input_dir) / "Annotations"
+    if not annotations_dir.is_dir():
+        return []
+    return sorted(
+        (p.name[:5] for p in annotations_dir.glob("*_annotation.mha")), key=int
+    )
+
+
+def read_annotation(input_dir: str, frame_index: str) -> np.ndarray:
+    """A saved annotation as an (H, W) array: 255 background, 1-7 object ids."""
+    path = Path(input_dir) / "Annotations" / f"{frame_index}_annotation.mha"
+    return sitk.GetArrayFromImage(sitk.ReadImage(str(path))).squeeze()
+
+
+def read_labels(input_dir: str) -> dict[str, str]:
+    """Saved object labels by object id. Missing or unreadable means no labels."""
+    path = Path(input_dir) / "Annotations" / "labels.json"
+    try:
+        with open(path) as f:
+            labels = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in labels.items() if str(k) != str(TARGET_OBJECT_ID)}
