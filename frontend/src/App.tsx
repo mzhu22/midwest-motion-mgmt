@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import FolderInput from "./components/FolderInput";
 import FrameViewer from "./components/FrameViewer";
 import LabelPanel from "./components/LabelPanel";
@@ -25,6 +25,10 @@ interface Edits {
   history: Record<string, Contour[][]>;
 }
 
+// Longer for feedback that has to be read and acted on.
+const TOAST_MS = 3000;
+const WARNING_TOAST_MS = 7000;
+
 export default function App() {
   const [frames, setFrames] = useState<FrameInfo[]>([]);
   // Which milestone (one sagittal+coronal pair) is currently shown. Milestone m is
@@ -33,14 +37,19 @@ export default function App() {
   const [milestoneBusy, setMilestoneBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [replacedCount, setReplacedCount] = useState(0);
   // Whether the loaded folder already holds a save, from /api/load-folder.
   const [hasAnnotations, setHasAnnotations] = useState(false);
-  const [loadingAnnotations, setLoadingAnnotations] = useState(false);
+  // Whether those saved annotations are what is on screen. False if loading them failed,
+  // in which case the folder's default frames are shown and a save would replace them.
+  const [annotationsLoaded, setAnnotationsLoaded] = useState(false);
   const [loadNotice, setLoadNotice] = useState("");
+  // A brief message that dismisses itself.
+  const [toast, setToast] = useState({ message: "", ms: TOAST_MS });
+  const showToast = useCallback(
+    (message: string, ms = TOAST_MS) => setToast({ message, ms }),
+    []
+  );
   const [error, setError] = useState("");
-  const [warning, setWarning] = useState("");
   // The earliest frame that can anchor a valid sagittal/coronal pair, from
   // /api/load-folder. Lets the sagittal-frame warning distinguish "typed frame
   // snapped to the nearest valid pair" from "typed frame was below the series' start".
@@ -50,6 +59,12 @@ export default function App() {
   const [activeColorIndex, setActiveColorIndex] = useState(1);
   const [edits, setEdits] = useState<Edits>({ contours: {}, history: {} });
   const frameContours = edits.contours;
+
+  useEffect(() => {
+    if (!toast.message) return;
+    const timer = setTimeout(() => showToast(""), toast.ms);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   // Replaces one frame's contours, remembering the version being replaced for Undo.
   const changeContours = useCallback((frameIndex: string, next: Contour[]) => {
@@ -78,47 +93,16 @@ export default function App() {
   const milestoneCount = frames.length / 2;
   const currentPair = frames.slice(milestoneIndex * 2, milestoneIndex * 2 + 2);
 
-  const handleLoad = useCallback(async (path: string) => {
-    setLoading(true);
-    setError("");
-    setWarning("");
-    setLoadNotice("");
-    try {
-      const res = await fetch("/api/load-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_path: path }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Failed to load");
-        return;
-      }
-      setFrames(data.selected.flat());
-      setMilestoneIndex(0);
-      setEdits({ contours: {}, history: {} });
-      setFirstValidFrame(data.first_valid_frame ?? null);
-      setHasAnnotations(Boolean(data.has_annotations));
-      setSavedPath(null);
-      setReplacedCount(0);
-    } catch (e) {
-      setError("Failed to connect to backend");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const handleLoadAnnotations = useCallback(async () => {
-    setLoadingAnnotations(true);
-    setError("");
-    setWarning("");
-    setLoadNotice("");
+  // Replaces the frames, contours and labels on screen with the folder's saved
+  // annotations. Returns whether that worked; on failure the error is already set and
+  // the current state is left alone.
+  const loadAnnotations = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/load-annotations", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Failed to load annotations");
-        return;
+        return false;
       }
       const loaded: Record<string, LoadedFrame> = data.frames;
       const selected: FrameInfo[] = data.selected.flat();
@@ -156,15 +140,50 @@ export default function App() {
       setMilestoneIndex(0);
       setEdits({ contours: nextContours, history: {} });
       setLabels(nextLabels);
-      setSavedPath(null);
-      setReplacedCount(0);
       setLoadNotice([describeMismatch(total), ...problems].filter(Boolean).join(" "));
+      return true;
+    } catch (e) {
+      setError("Failed to connect to backend");
+      return false;
+    }
+  }, []);
+
+  const handleLoad = useCallback(async (path: string) => {
+    setLoading(true);
+    setError("");
+    showToast("");
+    setLoadNotice("");
+    setAnnotationsLoaded(false);
+    try {
+      const res = await fetch("/api/load-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_path: path }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to load");
+        return;
+      }
+      setFrames(data.selected.flat());
+      setMilestoneIndex(0);
+      setEdits({ contours: {}, history: {} });
+      setFirstValidFrame(data.first_valid_frame ?? null);
+      setHasAnnotations(Boolean(data.has_annotations));
+      showToast("");
+      // Existing annotations are loaded straight away so they are not overwritten by
+      // accident; if that fails the freshly loaded frames stay as they are.
+      if (data.has_annotations) {
+        const loaded = await loadAnnotations();
+        setAnnotationsLoaded(loaded);
+        if (loaded) showToast("Existing annotations loaded");
+      }
     } catch (e) {
       setError("Failed to connect to backend");
     } finally {
-      setLoadingAnnotations(false);
+      setLoading(false);
     }
-  }, []);
+  }, [loadAnnotations]);
 
   const handleMilestoneCountChange = useCallback(async (count: number) => {
     setMilestoneBusy(true);
@@ -198,7 +217,7 @@ export default function App() {
 
       setMilestoneBusy(true);
       setError("");
-      setWarning("");
+      showToast("");
       try {
         const res = await fetch("/api/select-milestones", {
           method: "POST",
@@ -219,12 +238,14 @@ export default function App() {
         if (Number.isFinite(requested) && Number.isFinite(resolved) && requested !== resolved) {
           const first = firstValidFrame !== null ? parseInt(firstValidFrame, 10) : NaN;
           if (Number.isFinite(first) && requested < first) {
-            setWarning(
-              `Frame ${newSagittalIndex} is before the first valid frame (${firstValidFrame}); using frame ${resolvedIndex} instead.`
+            showToast(
+              `Frame ${newSagittalIndex} is before the first valid frame (${firstValidFrame}); using frame ${resolvedIndex} instead.`,
+              WARNING_TOAST_MS
             );
           } else {
-            setWarning(
-              `Frame ${newSagittalIndex} isn't part of a valid sagittal/coronal pair; snapped to the nearest one, frame ${resolvedIndex}.`
+            showToast(
+              `Frame ${newSagittalIndex} isn't part of a valid sagittal/coronal pair; snapped to the nearest one, frame ${resolvedIndex}.`,
+              WARNING_TOAST_MS
             );
           }
         }
@@ -323,16 +344,23 @@ export default function App() {
       if (!res.ok) {
         setError(data.error || "Save failed");
       } else {
-        setSavedPath(data.path ?? null);
-        setReplacedCount(data.replaced?.length ?? 0);
+        const replaced: number = data.replaced?.length ?? 0;
+        showToast(
+          `Saved to: ${data.path ?? "the Annotations folder"}` +
+            (replaced > 0
+              ? `. Cleared ${replaced} file${replaced === 1 ? "" : "s"} from a previous save.`
+              : ""),
+          WARNING_TOAST_MS
+        );
         setHasAnnotations(true);
+        setAnnotationsLoaded(true);
       }
     } catch (e) {
       setError("Failed to save");
     } finally {
       setSaving(false);
     }
-  }, [frames, labels, frameContours]);
+  }, [frames, labels, frameContours, showToast]);
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 20, maxWidth: 1400, margin: "0 auto" }}>
@@ -370,8 +398,9 @@ export default function App() {
         </div>
       )}
 
-      {hasAnnotations && (
+      {hasAnnotations && !annotationsLoaded && (
         <div
+          role="alert"
           style={{
             marginBottom: 16,
             padding: "10px 14px",
@@ -379,24 +408,34 @@ export default function App() {
             border: "1px solid #fde68a",
             borderRadius: 6,
             fontSize: 14,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap",
           }}
         >
-          <span style={{ flex: 1, minWidth: 240 }}>
-            This folder has saved annotations. You can load them to edit the existing annotations.
-          </span>
-          <LoadingOverlay active={loadingAnnotations} wrapperStyle={{ display: "inline-block" }}>
-            <button
-              onClick={handleLoadAnnotations}
-              disabled={loadingAnnotations || loading}
-              style={{ padding: "6px 16px", fontSize: 14 }}
-            >
-              Load existing annotations
-            </button>
-          </LoadingOverlay>
+          This folder has existing annotations, but they could not be loaded. Saving will replace them.
+        </div>
+      )}
+
+      {toast.message && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            top: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            padding: "16px 28px",
+            wordBreak: "break-word",
+            maxWidth: "min(640px, 90vw)",
+            textAlign: "center",
+            background: "#1f2937",
+            color: "#fff",
+            borderRadius: 8,
+            fontSize: 18,
+            fontWeight: 600,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+            zIndex: 1000,
+          }}
+        >
+          {toast.message}
         </div>
       )}
 
@@ -422,12 +461,6 @@ export default function App() {
         <div style={{ color: "#374151", marginBottom: 12, fontSize: 14 }}>{loadNotice}</div>
       )}
 
-      {!error && warning && (
-        <div style={{ color: "#92400e", marginBottom: 12, fontSize: 14 }}>
-          {warning}
-        </div>
-      )}
-
       {frames.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
           <LabelPanel
@@ -437,8 +470,6 @@ export default function App() {
             onActiveColorChange={setActiveColorIndex}
             onSave={handleSave}
             saving={saving}
-            savedPath={savedPath}
-            replacedCount={replacedCount}
           />
           <LoadingOverlay
             active={milestoneBusy}
@@ -470,7 +501,7 @@ export default function App() {
                     }
                     onUndo={() => undoContours(frame.frame_index)}
                     canUndo={(edits.history[frame.frame_index] ?? []).length > 0}
-                    onNotice={setWarning}
+                    onNotice={(message) => showToast(message, WARNING_TOAST_MS)}
                   />
                 </div>
               );

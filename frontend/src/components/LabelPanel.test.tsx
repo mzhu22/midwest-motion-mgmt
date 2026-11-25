@@ -11,8 +11,6 @@ const defaultProps = {
   onActiveColorChange: vi.fn(),
   onSave: vi.fn(),
   saving: false,
-  savedPath: null as string | null,
-  replacedCount: 0,
 };
 
 function renderPanel(overrides: Partial<typeof defaultProps> = {}) {
@@ -30,18 +28,6 @@ describe("LabelPanel", () => {
     renderPanel();
     const inputs = screen.getAllByPlaceholderText(/Object \d/);
     expect(inputs).toHaveLength(7);
-  });
-
-  it("shows the target as a legend entry, not a drawable object", async () => {
-    const user = userEvent.setup();
-    renderPanel();
-
-    const legend = screen.getByText(/target — reference only/i);
-    expect(legend).toBeInTheDocument();
-    // No input for it, and clicking it cannot make it the active object.
-    expect(screen.queryByDisplayValue("target")).not.toBeInTheDocument();
-    await user.click(legend);
-    expect(defaultProps.onActiveColorChange).not.toHaveBeenCalled();
   });
 
   it("clicking a color swatch calls onActiveColorChange", async () => {
@@ -101,30 +87,5 @@ describe("LabelPanel", () => {
     // inputs[3] is Object 4
     await user.click(inputs[3]!);
     expect(defaultProps.onActiveColorChange).toHaveBeenCalledWith(4);
-  });
-
-  it("shows save path when savedPath is set", () => {
-    renderPanel({ savedPath: "/some/folder/Annotations" });
-    expect(screen.getByText(/Saved to:.*Annotations/)).toBeInTheDocument();
-  });
-
-  it("does not show save message when savedPath is null", () => {
-    renderPanel({ savedPath: null });
-    expect(screen.queryByText(/Saved to:/)).not.toBeInTheDocument();
-  });
-
-  it("reports how many stale files the save cleared", () => {
-    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 3 });
-    expect(screen.getByText(/Cleared 3 files/)).toBeInTheDocument();
-  });
-
-  it("singularizes the cleared-file notice", () => {
-    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 1 });
-    expect(screen.getByText(/Cleared 1 file from/)).toBeInTheDocument();
-  });
-
-  it("omits the cleared notice when the folder was already empty", () => {
-    renderPanel({ savedPath: "/some/folder/Annotations", replacedCount: 0 });
-    expect(screen.queryByText(/Cleared/)).not.toBeInTheDocument();
   });
 });

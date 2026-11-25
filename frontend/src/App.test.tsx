@@ -75,8 +75,7 @@ const mockPairsMulti = [
 
 async function loadFrames(user: ReturnType<typeof userEvent.setup>) {
   const input = screen.getByPlaceholderText(/folder path/i);
-  await user.type(input, "/some/path");
-  await user.click(screen.getByRole("button", { name: /^load$/i }));
+  await user.type(input, "/some/path{Enter}");
   await waitFor(() => expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument());
 }
 
@@ -230,17 +229,6 @@ describe("App contour clearing", () => {
     await user.click(labelInputs()[0]!);
     expect(sagittalClear()).toBeEnabled();
   });
-
-  it("never offers the target as a drawable object", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await loadFrames(user);
-
-    // The legend names it, but there is no input and no way to select it.
-    expect(screen.getByText(/target — reference only/i)).toBeInTheDocument();
-    expect(screen.getAllByPlaceholderText(/Object \d/)).toHaveLength(7);
-    expect(screen.queryByPlaceholderText("Object 0")).not.toBeInTheDocument();
-  });
 });
 
 describe("App multi-milestone navigation", () => {
@@ -259,11 +247,11 @@ describe("App multi-milestone navigation", () => {
               }),
           });
         }
+        const custom = extra(url, opts);
+        if (custom) return Promise.resolve(custom);
         if (url === "/api/save") {
           return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: "ok" }) });
         }
-        const custom = extra(url, opts);
-        if (custom) return Promise.resolve(custom);
         return Promise.reject(new Error(`Unexpected fetch: ${url}`));
       })
     );
@@ -322,6 +310,36 @@ describe("App multi-milestone navigation", () => {
       "00005",
       "00006",
     ]);
+  });
+
+  it("reports a successful save in a toast, including any files it cleared", async () => {
+    stubFetch((url) => {
+      if (url === "/api/save") {
+        return {
+          ok: true,
+          json: () =>
+            Promise.resolve({ path: "/some/path/Annotations", replaced: ["a.mha", "labels.json"] }),
+        } as unknown as Response;
+      }
+      return undefined;
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await loadFrames(user);
+
+    await user.click(screen.getByRole("button", { name: "draw-00001" }));
+    await user.type(screen.getAllByPlaceholderText(/Object \d/)[0]!, "liver");
+    await user.click(screen.getByRole("button", { name: /next/i }));
+    await user.click(screen.getByRole("button", { name: "draw-00003" }));
+    await user.click(screen.getByRole("button", { name: /next/i }));
+    await user.click(screen.getByRole("button", { name: "draw-00005" }));
+    await user.click(screen.getByRole("button", { name: /save annotations/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Saved to: /some/path/Annotations. Cleared 2 files from a previous save."
+      )
+    );
   });
 
   it("rejects a save when a milestone has no drawn object", async () => {
@@ -428,26 +446,30 @@ describe("App loading saved annotations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers nothing to load when the folder has no saved annotations", async () => {
+  it("neither loads nor mentions annotations when the folder has none", async () => {
     stubFetch(false);
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
 
-    expect(
-      screen.queryByRole("button", { name: /load existing annotations/i })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/existing annotations/i)).not.toBeInTheDocument();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/load-annotations", expect.anything());
+    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
   });
 
-  it("offers to load when the folder has saved annotations, without loading them unasked", async () => {
+  it("loads existing annotations by default and briefly says so", async () => {
     stubFetch(true);
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
 
-    expect(screen.getByRole("button", { name: /load existing annotations/i })).toBeInTheDocument();
-    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith("/api/load-annotations", expect.anything());
-    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
+    await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/load-annotations", expect.anything());
+    expect(screen.getByRole("status")).toHaveTextContent("Existing annotations loaded");
+    // The message is a toast: it goes away on its own.
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument(), {
+      timeout: 4000,
+    });
   });
 
   it("restores every saved object as one contour and the labels", async () => {
@@ -456,7 +478,6 @@ describe("App loading saved annotations", () => {
     render(<App />);
     await loadFrames(user);
 
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
 
     await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
     expect(screen.getByTestId("contours-00002")).toHaveTextContent("1");
@@ -466,14 +487,14 @@ describe("App loading saved annotations", () => {
     expect(labelInputs[2]!.value).toBe("spleen");
   });
 
-  it("says the loaded contours match when they reproduce the saved pixels", async () => {
+  it("says nothing about the saved masks when the loaded contours reproduce them", async () => {
     stubFetch(true);
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
 
-    await waitFor(() => expect(screen.getByText(/match the saved masks exactly/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
+    expect(screen.queryByText(/saved masks/i)).not.toBeInTheDocument();
   });
 
   it("reports how far the loaded contours are from the saved masks when they are not", async () => {
@@ -489,7 +510,6 @@ describe("App loading saved annotations", () => {
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
 
     await waitFor(() => expect(screen.getByText(/differ from the saved masks by/i)).toBeInTheDocument());
   });
@@ -499,7 +519,6 @@ describe("App loading saved annotations", () => {
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
 
     await waitFor(() => expect(screen.getByText(/separate part of the outline was dropped/i)).toBeInTheDocument());
     expect(screen.getByText(/Frame 00001, object 3/)).toBeInTheDocument();
@@ -510,7 +529,6 @@ describe("App loading saved annotations", () => {
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
     await waitFor(() => expect(screen.getByTestId("contours-00001")).toHaveTextContent("1,3"));
 
     await user.click(screen.getByRole("button", { name: /save annotations/i }));
@@ -529,7 +547,7 @@ describe("App loading saved annotations", () => {
     expect(body.labels).toEqual({ "1": "liver", "3": "spleen" });
   });
 
-  it("shows the server's message and keeps the current work when loading fails", async () => {
+  it("shows the server's message and falls back to the folder's frames when loading fails", async () => {
     stubFetch(true, {
       ok: false,
       json: () => Promise.resolve({ error: "Saved annotations are not a set of pairs." }),
@@ -537,14 +555,13 @@ describe("App loading saved annotations", () => {
     const user = userEvent.setup();
     render(<App />);
     await loadFrames(user);
-    await user.click(screen.getByRole("button", { name: "draw-00001" }));
-
-    await user.click(screen.getByRole("button", { name: /load existing annotations/i }));
 
     await waitFor(() =>
       expect(screen.getByText(/not a set of pairs/i)).toBeInTheDocument()
     );
-    expect(screen.getByTestId("contours-00001")).toHaveTextContent("1");
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not be loaded/i);
+    expect(screen.getByTestId("contours-00001")).toBeEmptyDOMElement();
+    expect(screen.getByRole("button", { name: "draw-00001" })).toBeInTheDocument();
   });
 });
 

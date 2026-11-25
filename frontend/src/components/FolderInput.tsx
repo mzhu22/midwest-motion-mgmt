@@ -48,13 +48,6 @@ export default function FolderInput({ onLoad, loading }: Props) {
           if (e.key === "Enter" && path.trim()) onLoad(path.trim());
         }}
       />
-      <button
-        onClick={() => path.trim() && onLoad(path.trim())}
-        disabled={loading || !path.trim()}
-        style={{ padding: "6px 16px", fontSize: 14 }}
-      >
-        Load
-      </button>
       </LoadingOverlay>
     </div>
   );

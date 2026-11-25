@@ -241,8 +241,8 @@ export function commitStroke(args: {
     return {
       ok: false,
       reason:
-        `To reshape ${name}, start and end the stroke on its outline (within ` +
-        `${SNAP_DISTANCE} px). Use ✕ Clear to start that object over.`,
+        "You can only draw one contour per object. To edit the contour, start and end the " +
+        "stroke on its outline. Or use ✕ Clear to start over.",
     };
   }
   if (start.index === end.index) {

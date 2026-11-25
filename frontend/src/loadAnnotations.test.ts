@@ -64,8 +64,8 @@ describe("describeMismatch", () => {
     expect(describeMismatch({ total: 0, differing: 0, outlinesIdentical: true })).toBe("");
   });
 
-  it("reports an exact match", () => {
-    expect(describeMismatch({ total: 40, differing: 0, outlinesIdentical: true })).toMatch(/exactly/);
+  it("says nothing on an exact match", () => {
+    expect(describeMismatch({ total: 40, differing: 0, outlinesIdentical: true })).toBe("");
   });
 
   it("reports same regions with slightly different outlines", () => {

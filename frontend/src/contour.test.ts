@@ -230,7 +230,7 @@ describe("commitStroke: reshaping an existing outline", () => {
   it("refuses a stroke that does not start on the outline", () => {
     const result = reshape(drawSquare(), [40, 40, 45, 30, 50, 20]);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(new RegExp(`within ${SNAP_DISTANCE} px`));
+    if (!result.ok) expect(result.reason).toMatch(/one contour per object.*start and end the stroke on its outline.*Clear/);
   });
 
   it("refuses a stroke that does not end on the outline", () => {

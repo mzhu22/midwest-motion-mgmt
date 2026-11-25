@@ -67,8 +67,7 @@ export function compareObjectIds(
 }
 
 export function describeMismatch({ total, differing, outlinesIdentical }: Mismatch): string {
-  if (total === 0) return "";
-  if (outlinesIdentical) return "The loaded contours match the saved masks exactly.";
+  if (total === 0 || outlinesIdentical) return "";
   if (differing === 0) {
     return "The loaded contours enclose the same regions as the saved masks (the outlines differ by a pixel or so).";
   }

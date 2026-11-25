@@ -7,8 +7,6 @@ interface Props {
   onActiveColorChange: (index: number) => void;
   onSave: () => void;
   saving: boolean;
-  savedPath: string | null;
-  replacedCount: number;
 }
 
 export default function LabelPanel({
@@ -18,8 +16,6 @@ export default function LabelPanel({
   onActiveColorChange,
   onSave,
   saving,
-  savedPath,
-  replacedCount,
 }: Props) {
   return (
     <div style={{ padding: 12, minWidth: 240, flex: "0 0 auto" }}>
@@ -119,27 +115,6 @@ export default function LabelPanel({
         >
           {saving ? "Saving..." : "Save Annotations"}
         </button>
-
-        {savedPath && (
-          <div
-            title={savedPath}
-            style={{
-              fontSize: 13,
-              color: "#16a34a",
-              marginTop: 4,
-              maxWidth: 220,
-              wordBreak: "break-all",
-            }}
-          >
-            Saved to: {savedPath}
-            {replacedCount > 0 && (
-              <div style={{ color: "#a16207", marginTop: 4 }}>
-                Cleared {replacedCount} file{replacedCount === 1 ? "" : "s"} from
-                a previous save.
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
